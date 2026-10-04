@@ -7,8 +7,9 @@ All notable changes to SGTM Automix are documented here. Versions follow
 
 - Instance link: every SGTM Automix instance on the computer finds the
   others through shared memory and shares gain with them, also across host
-  processes. Live, the audio thread never waits; offline bounces match
-  sample positions exactly.
+  processes. Live, the audio thread never waits; offline bounces of the
+  whole mix match sample positions exactly when the host renders the tracks
+  together.
 - Channel list in the editor: every running channel with its name, input
   level, automix gain and weight. Channels can be named.
 - Bypass per channel (also the host's bypass) and an all-channels automix
@@ -34,6 +35,24 @@ All notable changes to SGTM Automix are documented here. Versions follow
 - Channel list sorted by group, then by name (numbers in numeric order).
 - Help window ("?" in the title bar) with a control reference and the
   disclaimer.
+- Fixes from the 2026-10-04 review:
+  - A track the host stops running (Logic after a region ends) no longer
+    holds the others down: the plug-in reports a 1 s tail so it keeps
+    running until its level has decayed, and a channel that stops anyway
+    fades out of the sharing over 200 ms instead of dropping out at once.
+  - "Automix on (all channels)" no longer switches itself back on when a
+    channel is added while the transport is stopped.
+  - No gain overshoot (or polarity flip) after a jump in position in the
+    middle of a gain change; every host now starts an offline bounce from a
+    fresh engine state.
+  - Offline: the wait back-off starts over for each bounce and after a peer
+    arrives in time, so one slow moment no longer costs exactness for the
+    rest of the session.
+  - The channel list shows a group change at once, also while the
+    transport is stopped.
+  - Long channel names are no longer cut in the middle of a letter.
+  - Help and README: bounce the whole mix; single-track bounces, exports
+    and freezes are rendered without the other channels.
 
 ## [0.1.0] — development skeleton (not released)
 

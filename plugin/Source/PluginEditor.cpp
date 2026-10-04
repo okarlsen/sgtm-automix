@@ -455,8 +455,13 @@ void AutomixEditor::showHelpDialog()
         "\n"
         "TIMING\n"
         "A talker comes up within a few milliseconds and channels settle back over a few "
-        "hundred milliseconds after someone stops. Offline bounces are calculated "
-        "sample-exactly across all channels.\n"
+        "hundred milliseconds after someone stops.\n"
+        "\n"
+        "BOUNCING\n"
+        "Bounce or export the whole mix. Offline bounces are calculated sample-exactly across "
+        "all channels when the host renders the tracks together. Bouncing in place, exporting "
+        "or freezing a single track renders it without the other channels, so the automix is "
+        "not applied to it.\n"
         "\n"
         "\n"
         "=== IF SOMETHING IS OFF ===\n"
@@ -568,6 +573,7 @@ void AutomixEditor::updateGroupColours()
 void AutomixEditor::timerCallback()
 {
     updateGroupColours();
+    processor.publishShownGroup(); // a group change shows in every list, also while stopped
     const auto& m = processor.getMeters();
     // Mono or stereo straight from the plug-in's current layout, so the meters follow every
     // layout change at once, with or without audio running.

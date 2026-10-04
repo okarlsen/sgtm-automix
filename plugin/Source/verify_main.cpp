@@ -717,6 +717,22 @@ void linkTests()
     }
 
     {
+        // Logic stops running every track while the transport is stopped. Adding a channel then is
+        // still the same session: the switch stays off.
+        LinkTestName shm;
+        sgtm::InstanceLink a (shm.name), b (shm.name);
+        const int64_t t = 10'000'000'000;
+        a.join (t);
+        b.join (t);
+        a.beginBlock (t, false, 0, 64);
+        b.beginBlock (t, false, 0, 64);
+        a.setAutomixOn (false);
+        sgtm::InstanceLink c (shm.name);
+        c.join (t + 5'000'000'000);
+        check (! c.isAutomixOn(), "adding a channel while the others are idle keeps the automix off");
+    }
+
+    {
         // A slot whose previous owner died mid-way through writing its name (odd sequence) is
         // reset when the slot is taken again, so the new owner's name can be read.
         LinkTestName shm;
@@ -767,6 +783,145 @@ void linkTests()
         b.leave();
         a.beginBlock (t + 1'500'001'000, false, 128, 64);
         check (a.getNumPeers() == 0 && a.getChannels (t + 1'500'001'000).size() == 1, "a peer that leaves is gone");
+    }
+
+    {
+        // A talking peer whose host stops running it fades out of the sharing before it drops out,
+        // so the remaining channel comes up smoothly instead of jumping.
+        LinkTestName shm;
+        auto chans = makeLinkedChannels (shm.name, { -30, -20 }, 48000 * 3);
+        double biggestStep = 0.0, previous = 0.0;
+        for (int pos = 0; pos + 64 <= 48000 * 3; pos += 64)
+        {
+            processBlock (chans[0], pos, 64, false, 1'000'000'000 + pos * nsPerSample);
+            if (pos < 48000)
+                processBlock (chans[1], pos, 64, false, 1'000'000'000 + pos * nsPerSample);
+            const double g = chans[0].engine.getCurrentGain();
+            if (pos > 48000)
+                biggestStep = std::max (biggestStep, std::abs (g - previous));
+            previous = g;
+        }
+        check (near (sgtm::gainToDb (previous), 0.0, 0.1), "a peer the host stops running leaves the sharing",
+               sgtm::gainToDb (previous), 0.0);
+        check (biggestStep < 0.1, "and the remaining channel comes up without a jump (largest change per 64 samples)",
+               biggestStep, 0.1);
+    }
+
+    {
+        // Names are cut to fit the shared block on a whole UTF-8 character.
+        LinkTestName shm;
+        sgtm::InstanceLink a (shm.name);
+        a.join();
+        std::string longName;
+        for (int i = 0; i < 30; ++i)
+            longName += "\xc3\xb8"; // a two-byte letter
+        a.setLabel (longName);
+        const auto list = a.getChannels();
+        check (list.size() == 1 && list[0].label == longName.substr (0, 46),
+               "a long name with two-byte letters is cut between letters");
+    }
+
+    {
+        // A group change shows in every channel list at once, also before the channel processes.
+        LinkTestName shm;
+        sgtm::InstanceLink a (shm.name), b (shm.name);
+        a.join();
+        b.join();
+        b.setShownGroup (2);
+        bool shown = false;
+        for (const auto& c : a.getChannels())
+            shown = shown || (! c.isSelf && c.group == 2);
+        check (shown, "a group change shows in the other channels' lists while stopped");
+    }
+
+    {
+        // Offline wait back-off: after a peer has kept a channel waiting many times, a new bounce
+        // starts the back-off over (2, 4, 8 ... blocks), and so does a wait that succeeds.
+        sgtm::InstanceLink::Settings settings;
+        settings.waitBudgetNs = 2'000'000;
+
+        // Peer b is loaded and running but never reaches the hop channel a waits for.
+        auto saturate = [&] (sgtm::InstanceLink& a, sgtm::InstanceLink& b, int64_t& hop, int blocks)
+        {
+            for (int k = 0; k < blocks; ++k, ++hop)
+            {
+                const int64_t now = sgtm::InstanceLink::steadyNowNs();
+                b.beginBlock (now, false, hop * 16, 16);
+                a.beginBlock (now, true, hop * 16, 16);
+                a.publish (hop, 1.0);
+                (void) a.sumOfPeerPowers (hop);
+            }
+        };
+        auto timeoutsOver = [&] (sgtm::InstanceLink& a, sgtm::InstanceLink& b, int64_t& hop, int blocks)
+        {
+            const auto before = a.getWaitTimeouts();
+            saturate (a, b, hop, blocks);
+            return (double) (a.getWaitTimeouts() - before);
+        };
+
+        {
+            LinkTestName shm;
+            sgtm::InstanceLink a (shm.name, settings), b (shm.name, settings);
+            a.join();
+            b.join();
+            int64_t hop = 0;
+            saturate (a, b, hop, 1100); // 10 timeouts: the back-off is at its longest (512 blocks)
+            hop += 100000;              // a new bounce elsewhere on the timeline
+            const double timeouts = timeoutsOver (a, b, hop, 64);
+            check (timeouts >= 5.0, "a new bounce starts the offline back-off over (timeouts in 64 blocks)", timeouts, 6.0);
+        }
+        {
+            LinkTestName shm;
+            sgtm::InstanceLink a (shm.name, settings), b (shm.name, settings);
+            a.join();
+            b.join();
+            int64_t hop = 0;
+            const auto before = a.getWaitTimeouts();
+            saturate (a, b, hop, 1100);
+            // Run on until the 512-block skip after the last timeout ends.
+            int64_t lastTimeoutHop = 0;
+            for (int64_t k = 0, seen = a.getWaitTimeouts() - before; k < 1100; ++k)
+            {
+                saturate (a, b, hop, 1);
+                if (a.getWaitTimeouts() - before != seen)
+                {
+                    seen = a.getWaitTimeouts() - before;
+                    lastTimeoutHop = hop - 1;
+                }
+            }
+            while (hop < lastTimeoutHop + 512)
+                saturate (a, b, hop, 1);
+
+            // This time b renders the hop on another thread while a waits: the wait succeeds.
+            std::thread peer ([&b, hop]
+            {
+                std::this_thread::sleep_for (std::chrono::microseconds (300));
+                b.beginBlock (sgtm::InstanceLink::steadyNowNs(), true, hop * 16, 16);
+                b.publish (hop, 1.0);
+            });
+            const auto timeoutsBefore = a.getWaitTimeouts();
+            a.beginBlock (sgtm::InstanceLink::steadyNowNs(), true, hop * 16, 16);
+            a.publish (hop, 1.0);
+            (void) a.sumOfPeerPowers (hop);
+            peer.join();
+            const bool waited = a.getWaitTimeouts() == timeoutsBefore;
+            ++hop;
+
+            // Then b falls behind for good (still running, never reaching the hop).
+            int fresh = 0;
+            for (int k = 0; k < 64; ++k, ++hop)
+            {
+                const auto t0 = a.getWaitTimeouts();
+                const int64_t now = sgtm::InstanceLink::steadyNowNs();
+                b.beginBlock (now, true, 0, 16); // b runs, but somewhere else: never reaches hop
+                a.beginBlock (now, true, hop * 16, 16);
+                a.publish (hop, 1.0);
+                (void) a.sumOfPeerPowers (hop);
+                fresh += (int) (a.getWaitTimeouts() - t0);
+            }
+            check (waited && fresh >= 5, "a wait that succeeds starts the offline back-off over (timeouts in 64 blocks)",
+                   fresh, 6.0);
+        }
     }
 
     {
@@ -893,6 +1048,48 @@ int main()
         const double gs = sgtm::gainToDb (stereoChannel.getCurrentGain());
         const double gm = sgtm::gainToDb (monoChannel.getCurrentGain());
         check (near (gs, gm, 0.05), "stereo detection is linked: left-only stereo shares like mono at its mean power", gs, gm);
+    }
+
+    std::printf ("\nJumps in position\n");
+    {
+        // Locates and bounce starts land anywhere, also in the middle of a hop while the gain is
+        // moving. The gain must stay between 0 and 1 (never past its target, never below zero).
+        struct SwingingPeer final : sgtm::PeerLevels
+        {
+            int64_t hops = 0;
+            void publish (int64_t, double) noexcept override {}
+            double sumOfPeerPowers (int64_t) noexcept override { return (++hops / 40) % 2 == 0 ? 1.0e3 : 0.0; }
+        } peer;
+
+        sgtm::AutomixChannel c;
+        c.prepare (48000.0);
+        std::mt19937 rng (99u);
+        std::uniform_int_distribution<int> blockDist (1, 40);
+        std::uniform_int_distribution<int> jumpDist (0, 9);
+        std::uniform_int_distribution<int64_t> whereDist (0, 10'000'000);
+        double lowest = 1.0, highest = 0.0;
+        int64_t pos = 0;
+        int sample = 0;
+        for (int k = 0; k < 20000; ++k)
+        {
+            const int n = blockDist (rng);
+            std::vector<float> in ((size_t) n);
+            for (int i = 0; i < n; ++i, ++sample)
+                in[(size_t) i] = 0.1f * (float) std::sin (2.0 * 3.14159265358979 * 1000.0 * sample / 48000.0);
+            auto out = in;
+            float* p = out.data();
+            c.process (&p, 1, n, pos, &peer);
+            for (int i = 0; i < n; ++i)
+                if (std::abs (in[(size_t) i]) > 0.01f)
+                {
+                    const double g = (double) out[(size_t) i] / in[(size_t) i];
+                    lowest = std::min (lowest, g);
+                    highest = std::max (highest, g);
+                }
+            pos = jumpDist (rng) == 0 ? whereDist (rng) : pos + n;
+        }
+        check (lowest >= -1.0e-6 && highest <= 1.0 + 1.0e-6,
+               "after jumps in position mid-hop the gain stays between 0 and 1 (lowest seen)", lowest, 0.0);
     }
 
     std::printf ("\nSolo pass-through and determinism\n");

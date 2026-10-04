@@ -7,8 +7,8 @@ instantly and the others duck, with no thresholds to set and no added
 latency.
 
 It runs live (MainStage, Logic, Cubase) with 0 samples of reported latency,
-and gives the same result in faster-than-real-time offline bounces (Pro
-Tools, Cubase, Logic).
+and is designed to give the same result in faster-than-real-time offline
+bounces of the whole mix as in playback.
 
 Built by SGTM on top of [JUCE](https://juce.com).
 
@@ -27,8 +27,8 @@ and share gain, live and in offline bounces. Not released.
 
 Insert SGTM Automix on each speech track, after EQ and before any
 compressor (compression flattens the level differences it relies on).
-It is meant to be inserted post-fader, as Yamaha recommends for its own
-automixer, and works best with one microphone per talker.
+It is meant to be inserted post-fader, and works best with one microphone
+per talker.
 
 - **Weight** sets a channel's priority. It changes how loud the channel looks
   to the automixer, not its audio level. Balance the weights so all GAIN
@@ -70,6 +70,11 @@ automixer, and works best with one microphone per talker.
 All instances on the computer link up, in any host and any number of host
 processes (up to 64 channels). Run one host session at a time while using
 it: two hosts open at once would link with each other.
+
+Bounce or export the whole mix. Bouncing in place, exporting or freezing a
+single track renders that track without the other channels, so the automix
+is not applied to it. Offline bounces are calculated sample-exactly across
+all channels when the host renders the tracks together.
 
 ## Building from source
 
