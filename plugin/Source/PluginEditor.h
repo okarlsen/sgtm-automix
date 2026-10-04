@@ -71,6 +71,8 @@ private:
     void timerCallback() override;
     void updateGroupColours();
 
+    static constexpr int minWidth = 460, minHeight = 450;
+
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
 
     AutomixProcessor& processor;

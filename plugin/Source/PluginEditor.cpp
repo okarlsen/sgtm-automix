@@ -317,7 +317,11 @@ AutomixEditor::AutomixEditor (AutomixProcessor& p)
     channelViewport.setScrollBarsShown (true, false);
     addAndMakeVisible (channelViewport);
 
-    setSize (460, 450);
+    // Resizable: the default size is the smallest; extra height goes to the channel list.
+    const auto size = p.getEditorSize(); // read before the calls below report a size of their own
+    setResizable (true, true);
+    setResizeLimits (minWidth, minHeight, 1600, 1600);
+    setSize (std::max (minWidth, size.x), std::max (minHeight, size.y));
     startTimerHz (30);
 }
 
@@ -354,7 +358,11 @@ void AutomixEditor::resized()
     auto area = getLocalBounds().reduced (12);
     area.removeFromTop (28);
 
-    auto listArea = area.removeFromBottom (200);
+    processor.setEditorSize ({ getWidth(), getHeight() });
+
+    auto top = area.removeFromTop (190);
+    area.removeFromTop (8);
+    auto listArea = area;
     auto switchRow = listArea.removeFromTop (26);
     bypassButton.setBounds (switchRow.removeFromLeft (90));
     groupBox.setBounds (switchRow.removeFromRight (56).reduced (0, 1));
@@ -368,7 +376,7 @@ void AutomixEditor::resized()
     channelViewport.setBounds (listArea);
     channelList.setSize (listArea.getWidth() - channelViewport.getScrollBarThickness(),
                          channelList.getHeight());
-    area.removeFromBottom (8);
+    area = top;
 
     auto meters = area.removeFromLeft (150);
     const int meterWidth = meters.getWidth() / 3;

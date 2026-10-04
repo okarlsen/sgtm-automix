@@ -74,6 +74,10 @@ public:
     // Channel name shown on every linked instance: the user's name if set, else the host's track
     // name. Message thread.
     juce::String getChannelName() const;
+
+    // The editor's last size, kept while the plug-in stays loaded (not saved with the session).
+    juce::Point<int> getEditorSize() const noexcept { return editorSize; }
+    void setEditorSize (juce::Point<int> size) noexcept { editorSize = size; }
     void setChannelName (const juce::String& name);
     juce::String getDisplayedLabel() const;
 
@@ -108,6 +112,7 @@ private:
     int64_t samplePosition = 0;
 
     juce::String userLabel;
+    juce::Point<int> editorSize { 0, 0 };
     juce::CriticalSection trackNameLock; // guards userLabel and trackName
     juce::String trackName;
 
