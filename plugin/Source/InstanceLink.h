@@ -145,11 +145,14 @@ public:
             .count();
     }
 
-    // One block per user, versioned, so a layout change never meets an older build's block.
+    // One block per user and per layout. The layout size is in the name, so a build with a
+    // different layout never meets a block left by another build (a block outlives the processes
+    // that used it until the Mac restarts). Builds with different layouts do not link.
     static std::string defaultName()
     {
 #if SGTM_LINK_POSIX
-        return "/sgtm-automix-1-" + std::to_string ((unsigned long) getuid());
+        return "/sgtm-automix-" + std::to_string (sizeof (linkdetail::Shared)) + "-"
+               + std::to_string ((unsigned long) getuid());
 #else
         return {};
 #endif
@@ -168,7 +171,7 @@ public:
     explicit InstanceLink (const std::string& name = defaultName(), Settings s = {})
         : settings (s)
     {
-        shared = openShared (name);
+        shared = openShared (name, unavailableReason);
         token = makeToken();
     }
 
@@ -187,6 +190,9 @@ public:
     // False when the shared block could not be opened (sandboxed host, unsupported platform):
     // the channel then runs solo.
     bool isAvailable() const noexcept { return shared != nullptr; }
+
+    // Why the shared block could not be used, when it could not (shown in the window).
+    const std::string& getUnavailableReason() const noexcept { return unavailableReason; }
     bool isJoined() const noexcept { return self != nullptr; }
     int getSlotIndex() const noexcept { return selfIndex; }
 
@@ -643,15 +649,21 @@ private:
         return t == 0 ? 1 : t;
     }
 
-    static linkdetail::Shared* openShared (const std::string& name) noexcept
+    static linkdetail::Shared* openShared (const std::string& name, std::string& reason)
     {
 #if SGTM_LINK_POSIX
-        if (name.empty())
+        auto fail = [&reason] (const char* what, int err)
+        {
+            reason = std::string (what) + (err != 0 ? " (" + std::string (std::strerror (err)) + ")" : "");
             return nullptr;
+        };
+
+        if (name.empty())
+            return fail ("no shared block name", 0);
 
         const int fd = shm_open (name.c_str(), O_RDWR | O_CREAT, 0600);
         if (fd < 0)
-            return nullptr;
+            return fail ("shared block cannot be opened", errno);
 
         const auto size = (off_t) sizeof (linkdetail::Shared);
         struct stat st {};
@@ -660,14 +672,16 @@ private:
 
         if (fstat (fd, &st) != 0 || st.st_size < size)
         {
+            const int err = errno;
             close (fd);
-            return nullptr;
+            return fail ("shared block has the wrong size", err);
         }
 
         void* mem = mmap (nullptr, sizeof (linkdetail::Shared), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        const int mapErr = errno;
         close (fd);
         if (mem == MAP_FAILED)
-            return nullptr;
+            return fail ("shared block cannot be mapped", mapErr);
 
         // A new block is all zeros, which is a valid empty state; stamp it once.
         auto* shared = static_cast<linkdetail::Shared*> (mem);
@@ -680,11 +694,12 @@ private:
                      && shared->layoutSize.load (std::memory_order_acquire) != 0))
         {
             munmap (mem, sizeof (linkdetail::Shared));
-            return nullptr;
+            return fail ("shared block is from another plug-in version", 0);
         }
         return shared;
 #else
         (void) name;
+        reason = "not supported on this platform";
         return nullptr;
 #endif
     }
@@ -695,6 +710,7 @@ private:
     int selfIndex = -1;
     uint64_t token = 0;
     std::string label;
+    std::string unavailableReason;
 
     // Audio-thread state.
     bool offline = false, running = false;

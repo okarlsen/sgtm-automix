@@ -288,6 +288,26 @@ void linkTests()
     }
 
     {
+        // A block left behind by a build with another layout must not stop this build linking.
+        const auto name = sgtm::InstanceLink::defaultName();
+        check (name.find (std::to_string (sizeof (sgtm::linkdetail::Shared))) != std::string::npos && name.size() <= 31,
+               "the shared block's name carries the layout, so older builds' blocks are never reused");
+
+        LinkTestName shm;
+        {
+            const int fd = shm_open (shm.name.c_str(), O_RDWR | O_CREAT, 0600);
+            ftruncate (fd, (off_t) sizeof (sgtm::linkdetail::Shared));
+            auto* old = static_cast<uint32_t*> (mmap (nullptr, 8, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+            old[0] = sgtm::linkdetail::magic;
+            old[1] = 12345; // another layout
+            munmap (old, 8);
+            close (fd);
+        }
+        sgtm::InstanceLink stale (shm.name);
+        check (! stale.isAvailable(), "a block with another layout is refused, not misread");
+    }
+
+    {
         LinkTestName shm;
         auto g = runLiveGroup (shm.name, { -40, -40, -40, -40 });
         for (int i = 0; i < 4; ++i)

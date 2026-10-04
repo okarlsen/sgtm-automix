@@ -57,6 +57,10 @@ public:
 
     // Instance link, for the editor (message thread).
     bool isLinkAvailable() const noexcept { return link.isAvailable() && link.isJoined(); }
+    juce::String getLinkUnavailableReason() const
+    {
+        return link.isAvailable() ? juce::String ("all 64 channel slots in use") : juce::String (link.getUnavailableReason());
+    }
 
     // The all-channels switch, shared by every linked instance (not saved with the session).
     bool isAutomixOnForAll() const noexcept { return link.isAutomixOn(); }

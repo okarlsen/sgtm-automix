@@ -355,7 +355,7 @@ void AutomixEditor::timerCallback()
 
     juce::String status;
     if (! processor.isLinkAvailable())
-        status = "Link unavailable: running solo";
+        status = "Link unavailable (" + processor.getLinkUnavailableReason() + "): running solo";
     else
     {
         const int peers = m.numPeers.load (std::memory_order_relaxed);
