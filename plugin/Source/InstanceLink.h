@@ -88,6 +88,7 @@ struct alignas (64) Slot
 
     // Display values, written once per block by the owner's audio thread.
     std::atomic<uint32_t> inputDbBits, gainDbBits, outputDbBits, weightDbBits;
+    std::atomic<uint32_t> inputLeftDbBits, inputRightDbBits, numChannels;
     std::atomic<uint32_t> bypassed, present;
 
     // Group membership, written by the owner's audio thread. While moving, the channel counts
@@ -118,6 +119,8 @@ struct LinkedChannelInfo
     bool isSelf = false;
     std::string label;
     float inputDb = -120.0f, gainDb = 0.0f, outputDb = -120.0f, weightDb = 0.0f;
+    float inputLeftDb = -120.0f, inputRightDb = -120.0f; // per side on a stereo channel
+    bool stereo = false;
     bool bypassed = false;
     bool present = true; // carries signal (a channel without signal takes no share)
     bool idle = false; // loaded but not processing (for example Logic with the transport stopped)
@@ -298,6 +301,9 @@ public:
             info.gainDb = linkdetail::fromBits32 (s.gainDbBits.load (std::memory_order_relaxed));
             info.outputDb = linkdetail::fromBits32 (s.outputDbBits.load (std::memory_order_relaxed));
             info.weightDb = linkdetail::fromBits32 (s.weightDbBits.load (std::memory_order_relaxed));
+            info.inputLeftDb = linkdetail::fromBits32 (s.inputLeftDbBits.load (std::memory_order_relaxed));
+            info.inputRightDb = linkdetail::fromBits32 (s.inputRightDbBits.load (std::memory_order_relaxed));
+            info.stereo = s.numChannels.load (std::memory_order_relaxed) >= 2;
             info.bypassed = s.bypassed.load (std::memory_order_relaxed) != 0;
             info.present = s.present.load (std::memory_order_relaxed) != 0;
             result.push_back (std::move (info));
@@ -354,6 +360,16 @@ public:
             // host has not switched it to the bounce yet) or is on a previous pass is waited for.
             p.exact = isOffline;
         }
+    }
+
+    // Per-side input levels for this block's display; numChannels 1 shows one bar.
+    void setInputSides (float leftDb, float rightDb, int numChannels) noexcept
+    {
+        if (self == nullptr)
+            return;
+        self->inputLeftDbBits.store (linkdetail::toBits (leftDb), std::memory_order_relaxed);
+        self->inputRightDbBits.store (linkdetail::toBits (rightDb), std::memory_order_relaxed);
+        self->numChannels.store ((uint32_t) numChannels, std::memory_order_relaxed);
     }
 
     // Display values for this block.

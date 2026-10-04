@@ -118,6 +118,7 @@ void ChannelList::setChannels (std::vector<LinkedChannelInfo> newChannels, bool 
         // Compare at display resolution so an idle list does not repaint.
         auto q = [] (float db) { return (int) std::lround (db * 2.0f); };
         return a.slot == b.slot && a.group == b.group && a.isSelf == b.isSelf && a.label == b.label && q (a.inputDb) == q (b.inputDb)
+               && a.stereo == b.stereo && q (a.inputLeftDb) == q (b.inputLeftDb) && q (a.inputRightDb) == q (b.inputRightDb)
                && q (a.gainDb) == q (b.gainDb) && q (a.weightDb) == q (b.weightDb) && a.bypassed == b.bypassed && a.present == b.present && a.idle == b.idle;
     };
 
@@ -213,7 +214,19 @@ void ChannelList::paint (juce::Graphics& g)
         row.removeFromRight (6);
         const auto bars = row.toFloat().reduced (0, 4);
         const auto half = bars.getWidth() / 2.0f - 2.0f;
-        drawBar (bars.withWidth (half), (c.inputDb + 60.0f) / 60.0f, juce::Colour (0xff4caf50));
+        const auto inputBar = bars.withWidth (half);
+        const auto inputColour = juce::Colour (0xff4caf50);
+        if (c.stereo)
+        {
+            // Thin left/right pair.
+            const float h = (inputBar.getHeight() - 2.0f) / 2.0f;
+            drawBar (inputBar.withHeight (h), (c.inputLeftDb + 60.0f) / 60.0f, inputColour);
+            drawBar (inputBar.withTrimmedTop (h + 2.0f), (c.inputRightDb + 60.0f) / 60.0f, inputColour);
+        }
+        else
+        {
+            drawBar (inputBar, (c.inputDb + 60.0f) / 60.0f, inputColour);
+        }
         const auto gainBar = bars.withTrimmedLeft (half + 4.0f);
         const auto gainColour = juce::Colour (0xffffb300);
         drawBar (gainBar, gainProportion (c.gainDb),

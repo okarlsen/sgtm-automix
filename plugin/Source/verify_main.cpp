@@ -445,6 +445,45 @@ void linkTests()
         check (worst == 0.0, "offline with groups A and B: identical to exact per-group reference", worst, 0.0);
     }
 
+    std::printf ("\nMono and stereo together\n");
+    {
+        // The same voice on a mono track and on a stereo track (both sides) takes the same share:
+        // the detector uses the mean power over the channels, so stereo gets no hidden +3 dB.
+        LinkTestName shm;
+        auto chans = makeLinkedChannels (shm.name, { -40, -40 }, 48000);
+        std::vector<float> right = chans[1].audio;
+        int64_t pos = 0;
+        for (; pos + 64 <= 48000; pos += 64)
+        {
+            processBlock (chans[0], pos, 64, false, 1'000'000'000 + pos * nsPerSample);
+            float* p[2] = { chans[1].audio.data() + pos, right.data() + pos };
+            chans[1].engine.setBypassed (false);
+            chans[1].link->beginBlock (1'000'000'000 + pos * nsPerSample, false, pos, 64);
+            chans[1].engine.process (p, 2, 64, pos, chans[1].link.get());
+        }
+        const double gm = sgtm::gainToDb (chans[0].engine.getCurrentGain());
+        const double gs = sgtm::gainToDb (chans[1].engine.getCurrentGain());
+        check (near (gm, -3.01, 0.5) && near (gs, -3.01, 0.5), "equal voices on a mono and a stereo channel: -3 dB each",
+               gs, gm);
+
+        // The stereo channel's track turns mono (same voice): its share does not jump.
+        double biggestStep = 0.0, previous = chans[1].engine.getCurrentGain();
+        auto more0 = noise (48000, -40.0, 900u), more1 = noise (48000, -40.0, 901u);
+        for (int k = 0; k + 64 <= 48000; k += 64, pos += 64)
+        {
+            float* a = more0.data() + k;
+            chans[0].link->beginBlock (1'000'000'000 + pos * nsPerSample, false, pos, 64);
+            chans[0].engine.process (&a, 1, 64, pos, chans[0].link.get());
+            float* b = more1.data() + k;
+            chans[1].link->beginBlock (1'000'000'000 + pos * nsPerSample, false, pos, 64);
+            chans[1].engine.process (&b, 1, 64, pos, chans[1].link.get());
+            biggestStep = std::max (biggestStep, std::abs (chans[1].engine.getCurrentGain() - previous));
+            previous = chans[1].engine.getCurrentGain();
+        }
+        check (biggestStep < 0.05 && near (sgtm::gainToDb (previous), -3.01, 0.5),
+               "a channel switching from stereo to mono keeps its share without a jump", biggestStep, 0.05);
+    }
+
     std::printf ("\nSignal presence\n");
     {
         LinkTestName shm;
@@ -556,10 +595,13 @@ void linkTests()
         const int64_t t = 5'000'000'000;
         b.beginBlock (t, false, 0, 64);
         b.setDisplay (-30.0f, -3.0f, -33.0f, 2.0f);
+        b.setInputSides (-28.0f, -34.0f, 2);
         a.beginBlock (t + 1000, false, 0, 64);
         const auto list = a.getChannels (t + 1000);
-        const bool sawB = list.size() == 2 && list[1].label == "Pastor" && list[1].weightDb == 2.0f && ! list[1].isSelf;
-        check (a.getNumPeers() == 1 && sawB, "a running peer is counted and its name and levels are visible");
+        const bool sawB = list.size() == 2 && list[1].label == "Pastor" && list[1].weightDb == 2.0f && ! list[1].isSelf
+                          && list[1].stereo && list[1].inputLeftDb == -28.0f && list[1].inputRightDb == -34.0f
+                          && ! list[0].stereo;
+        check (a.getNumPeers() == 1 && sawB, "a running peer is counted and its name, levels and stereo input sides are visible");
         a.beginBlock (t + 1'500'000'000, false, 64, 64);
         const auto later = a.getChannels (t + 1'500'000'000);
         check (a.getNumPeers() == 0, "a peer that stops processing drops out of the sharing after 1 s");

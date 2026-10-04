@@ -141,6 +141,7 @@ void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     meters.automixGainDb.store (automixDb, std::memory_order_relaxed);
     meters.outputDb.store (outputDb, std::memory_order_relaxed);
     link.setDisplay (inputDb, automixDb, outputDb, weight, channelBypassed, engine.isPresent());
+    link.setInputSides (in.channelDb[0], in.channelDb[1], numChannels);
 }
 
 void AutomixProcessor::getStateInformation (juce::MemoryBlock& destData)
