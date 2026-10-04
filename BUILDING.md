@@ -93,7 +93,9 @@ Two test programs, both built by default:
   block sizes that must match an exact reference bit for bit (twice), tracks
   rendered serially on one thread without stalling, groups (independent
   sharing, a lone channel per group, moving between groups, and an offline
-  bounce with two groups against an exact reference), bypass, the
+  bounce with two groups against an exact reference), channels without
+  signal (not diluting the others, waking up smoothly, hysteresis, ten open
+  mics at room tone each at −10 dB), bypass, the
   all-channels switch, peers dropping out, and a crashed peer process.
 - **SGTMAutomixSmokeTest** loads the built VST3s the way a host does and
   checks 0 samples latency, pass-through, the Output Gain parameter, state

@@ -96,7 +96,7 @@ void ChannelList::setChannels (std::vector<LinkedChannelInfo> newChannels, bool 
         // Compare at display resolution so an idle list does not repaint.
         auto q = [] (float db) { return (int) std::lround (db * 2.0f); };
         return a.slot == b.slot && a.group == b.group && a.isSelf == b.isSelf && a.label == b.label && q (a.inputDb) == q (b.inputDb)
-               && q (a.gainDb) == q (b.gainDb) && q (a.weightDb) == q (b.weightDb) && a.bypassed == b.bypassed && a.idle == b.idle;
+               && q (a.gainDb) == q (b.gainDb) && q (a.weightDb) == q (b.weightDb) && a.bypassed == b.bypassed && a.present == b.present && a.idle == b.idle;
     };
 
     if (automixOn == allOn && newChannels.size() == channels.size()
@@ -177,9 +177,11 @@ void ChannelList::paint (juce::Graphics& g)
         }
 
         auto weightArea = row.removeFromRight (64);
-        g.setColour (c.bypassed ? juce::Colour (0xffef5350) : juce::Colours::grey);
-        g.drawText (c.bypassed ? juce::String ("BYPASS") : juce::String (c.weightDb, 1) + " dB", weightArea,
-                    juce::Justification::centredRight);
+        g.setColour (c.bypassed ? juce::Colour (0xffef5350) : ! c.present ? juce::Colour (0xff90a4ae) : juce::Colours::grey);
+        g.drawText (c.bypassed     ? juce::String ("BYPASS")
+                    : ! c.present ? juce::String ("NO SIGNAL")
+                                  : juce::String (c.weightDb, 1) + " dB",
+                    weightArea, juce::Justification::centredRight);
 
         auto gainText = row.removeFromRight (56);
         g.setColour (juce::Colour (0xffffb300));
@@ -192,7 +194,8 @@ void ChannelList::paint (juce::Graphics& g)
         drawBar (bars.withWidth (half), (c.inputDb + 60.0f) / 60.0f, juce::Colour (0xff4caf50));
         const auto gainBar = bars.withTrimmedLeft (half + 4.0f);
         const auto gainColour = juce::Colour (0xffffb300);
-        drawBar (gainBar, gainProportion (c.gainDb), c.bypassed || ! allOn ? gainColour.withAlpha (0.3f) : gainColour);
+        drawBar (gainBar, gainProportion (c.gainDb),
+                 c.bypassed || ! c.present || ! allOn ? gainColour.withAlpha (0.3f) : gainColour);
         g.setColour (juce::Colours::white.withAlpha (0.35f));
         for (float tick : gainTicksDb)
             if (tick < 0.0f && tick > -gainRangeDb)
@@ -358,10 +361,17 @@ void AutomixEditor::timerCallback()
         status = "Link unavailable (" + processor.getLinkUnavailableReason() + "): running solo";
     else
     {
-        const int peers = m.numPeers.load (std::memory_order_relaxed);
-        status = "Group " + AutomixProcessor::groupName (processor.getGroup()) + ": "
-                 + (peers == 0 ? juce::String ("solo, no other channels processing")
-                               : "linked with " + juce::String (peers) + " other channel" + (peers == 1 ? "" : "s"));
+        // Channels in this group that are processing, and how many of them take part (signal
+        // present, not bypassed).
+        int inGroup = 0, active = 0;
+        for (const auto& c : channels)
+            if (c.group == ownGroup && ! c.idle)
+            {
+                ++inGroup;
+                active += (c.present && ! c.bypassed) ? 1 : 0;
+            }
+        status = "Group " + AutomixProcessor::groupName (ownGroup) + ": " + juce::String (active) + " active of "
+                 + juce::String (inGroup) + " channel" + (inGroup == 1 ? "" : "s");
         if (idle > 0)
             status << ", " << idle << " idle";
         if (selfIdle)

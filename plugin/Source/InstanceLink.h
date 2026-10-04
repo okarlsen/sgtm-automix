@@ -88,7 +88,7 @@ struct alignas (64) Slot
 
     // Display values, written once per block by the owner's audio thread.
     std::atomic<uint32_t> inputDbBits, gainDbBits, outputDbBits, weightDbBits;
-    std::atomic<uint32_t> bypassed;
+    std::atomic<uint32_t> bypassed, present;
 
     // Group membership, written by the owner's audio thread. While moving, the channel counts
     // (1 - fade) in prevGroup and fade in group.
@@ -119,6 +119,7 @@ struct LinkedChannelInfo
     std::string label;
     float inputDb = -120.0f, gainDb = 0.0f, outputDb = -120.0f, weightDb = 0.0f;
     bool bypassed = false;
+    bool present = true; // carries signal (a channel without signal takes no share)
     bool idle = false; // loaded but not processing (for example Logic with the transport stopped)
     int group = 0;     // 0 = A, 1 = B, 2 = C
 };
@@ -298,6 +299,7 @@ public:
             info.outputDb = linkdetail::fromBits32 (s.outputDbBits.load (std::memory_order_relaxed));
             info.weightDb = linkdetail::fromBits32 (s.weightDbBits.load (std::memory_order_relaxed));
             info.bypassed = s.bypassed.load (std::memory_order_relaxed) != 0;
+            info.present = s.present.load (std::memory_order_relaxed) != 0;
             result.push_back (std::move (info));
         }
         return result;
@@ -355,11 +357,13 @@ public:
     }
 
     // Display values for this block.
-    void setDisplay (float inputDb, float gainDb, float outputDb, float weightDb, bool bypassed = false) noexcept
+    void setDisplay (float inputDb, float gainDb, float outputDb, float weightDb, bool bypassed = false,
+                     bool present = true) noexcept
     {
         if (self == nullptr)
             return;
         self->bypassed.store (bypassed ? 1u : 0u, std::memory_order_relaxed);
+        self->present.store (present ? 1u : 0u, std::memory_order_relaxed);
         self->inputDbBits.store (linkdetail::toBits (inputDb), std::memory_order_relaxed);
         self->gainDbBits.store (linkdetail::toBits (gainDb), std::memory_order_relaxed);
         self->outputDbBits.store (linkdetail::toBits (outputDb), std::memory_order_relaxed);

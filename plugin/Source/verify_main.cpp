@@ -152,6 +152,7 @@ std::vector<LinkedChannel> makeLinkedChannels (const std::string& name, const st
 void processBlock (LinkedChannel& c, int64_t start, int n, bool offline, int64_t nowNs, int64_t offset = 0)
 {
     float* p = c.audio.data() + (start - offset);
+    c.engine.setBypassed (c.engine.isBypassed()); // the plugin sets bypass every block
     c.link->beginBlock (nowNs, offline, start, n);
     c.engine.process (&p, 1, n, start, c.link.get());
 }
@@ -444,6 +445,68 @@ void linkTests()
         check (worst == 0.0, "offline with groups A and B: identical to exact per-group reference", worst, 0.0);
     }
 
+    std::printf ("\nSignal presence\n");
+    {
+        LinkTestName shm;
+        auto g = runLiveGroup (shm.name, std::vector<double> (10, -71.4));
+        check (near (g[0], -10.0, 0.6) && near (g[9], -10.0, 0.6),
+               "10 open mics at room tone (-71.4 dBFS): each about -10 dB", g[0], -10.0);
+    }
+    {
+        LinkTestName shm;
+        auto g = runLiveGroup (shm.name, { -40, -40, -110 });
+        check (near (g[0], -3.01, 0.5) && near (g[1], -3.01, 0.5),
+               "a channel with its fader down does not dilute the others (-3 dB, not -4.8)", g[0], -3.01);
+        check (near (g[2], 0.0, 1e-9), "and sits at unity itself", g[2], 0.0);
+    }
+    {
+        // A channel wakes up: fader comes up from silence. Smooth, then shares with the others.
+        LinkTestName shm;
+        auto chans = makeLinkedChannels (shm.name, { -40, -40, -40 }, 96000);
+        for (int i = 0; i < 48000; ++i)
+            chans[2].audio[(size_t) i] = 0.0f;
+        double biggestStep = 0.0, previous = 1.0;
+        for (int pos = 0; pos + 64 <= 96000; pos += 64)
+        {
+            for (auto& c : chans)
+                processBlock (c, pos, 64, false, 1'000'000'000 + pos * nsPerSample);
+            const double gain = chans[0].engine.getCurrentGain();
+            if (pos >= 48000)
+                biggestStep = std::max (biggestStep, std::abs (gain - previous));
+            previous = gain;
+            if (pos == 47936)
+                check (! chans[2].engine.isPresent() && near (sgtm::gainToDb (gain), -3.01, 0.5),
+                       "while silent, the other two share as a pair", sgtm::gainToDb (gain), -3.01);
+        }
+        check (chans[2].engine.isPresent() && near (sgtm::gainToDb (chans[2].engine.getCurrentGain()), -4.77, 0.6),
+               "after waking up, all three share", sgtm::gainToDb (chans[2].engine.getCurrentGain()), -4.77);
+        check (biggestStep < 0.05, "the others fade down as it joins (largest change per 64 samples)", biggestStep, 0.05);
+    }
+    {
+        // Hysteresis: a dip to between the thresholds keeps the channel in; a drop below the lower
+        // threshold takes it out only after the 1 s hold.
+        sgtm::AutomixChannel c;
+        c.prepare (linkRate);
+        auto run = [&] (double db, int samples)
+        {
+            auto a = noise (samples, db, 77u);
+            for (int pos = 0; pos + 64 <= samples; pos += 64)
+            {
+                float* p = a.data() + pos;
+                c.process (&p, 1, 64, 0, nullptr);
+            }
+        };
+        run (-60.0, 24000);
+        const bool inAtFirst = c.isPresent();
+        run (-78.0, 96000);
+        const bool stillInBetween = c.isPresent();
+        run (-95.0, 24000);
+        const bool inDuringHold = c.isPresent();
+        run (-95.0, 72000);
+        check (inAtFirst && stillInBetween, "a level between the two thresholds keeps the channel in");
+        check (inDuringHold && ! c.isPresent(), "below the lower threshold it leaves after the 1 s hold");
+    }
+
     {
         // Bypass on one of two channels: it fades to unity and out of the group, so the other
         // channel is alone and also goes to unity. No step larger than the fade allows.
@@ -584,7 +647,7 @@ int main()
     }
     {
         auto g = runGroup ({ -200, -200, -200 }); // effectively digital silence
-        check (near (g[0], -4.77, 0.1), "silence: gain shared equally (-10log10(3))", g[0], -4.77);
+        check (near (g[0], 0.0, 1e-9), "digital silence: no signal, so no share taken and unity gain", g[0], 0.0);
     }
 
     std::printf ("\nSolo pass-through and determinism\n");

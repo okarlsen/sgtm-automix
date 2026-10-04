@@ -173,8 +173,9 @@ void testLinked (juce::AudioPluginFormatManager& formats, const juce::String& pa
 
     auto [outA, outB] = runBoth (750); // 1 s
     const float half = juce::Decibels::decibelsToGain (-3.01f);
-    check (maxDiff (outA, input, half) < 0.01f && maxDiff (outB, input, half) < 0.01f,
-           "equal channels share gain: each about -3 dB");
+    const float diffA = maxDiff (outA, input, half), diffB = maxDiff (outB, input, half);
+    check (diffA < 0.01f && diffB < 0.01f,
+           "equal channels share gain: each about -3 dB (max error " + juce::String (std::max (diffA, diffB), 4) + ")");
 
     auto* bypass = findParam (*a, "Bypass");
     check (bypass != nullptr && a->getBypassParameter() == bypass, "has Bypass, mapped to the host's bypass");

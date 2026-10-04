@@ -15,7 +15,12 @@
 //
 // where P is a smoothed, weighted mean-square level. The gains then always add up (in power)
 // to one open channel: N equal channels each get -10*log10(N) dB, a channel 20 dB above the
-// rest gets ~0 dB and the rest ~-20 dB. No thresholds, no look-ahead, zero latency.
+// rest gets ~0 dB and the rest ~-20 dB. No look-ahead, zero latency.
+//
+// A channel only takes part while it carries signal. Inserted post-fader, a channel whose fader is
+// down (or whose source is unplugged) must not take a share from the others, so below a presence
+// threshold it leaves the group, contributes nothing and sits at unity gain. The threshold sits
+// well below an open microphone's room tone, so open but quiet mics still count.
 
 #include <algorithm>
 #include <cmath>
@@ -36,7 +41,14 @@ struct EngineSettings
     double releaseMs = 200.0;
 
     // Bypass fades the channel to unity gain, and its share out of the group, over this time.
+    // Joining or leaving because of signal presence uses the same fade.
     double bypassFadeMs = 20.0;
+
+    // Signal presence, on the unweighted detector level: present from presenceOnDb up, absent
+    // after staying below presenceOffDb for presenceHoldMs.
+    double presenceOnDb = -75.0;
+    double presenceOffDb = -81.0;
+    double presenceHoldMs = 1000.0;
 
     // Added to every channel's power so digital silence still shares gain equally
     // (N silent channels each get -10*log10(N) dB). -100 dBFS.
@@ -84,6 +96,9 @@ public:
         attackCoeff = std::exp (-1000.0 / (settings.attackMs * hopsPerSecond));
         releaseCoeff = std::exp (-1000.0 / (settings.releaseMs * hopsPerSecond));
         bypassStep = std::min (1.0, 1000.0 / (settings.bypassFadeMs * hopsPerSecond));
+        presenceOnPower = std::pow (10.0, settings.presenceOnDb / 10.0);
+        presenceOffPower = std::pow (10.0, settings.presenceOffDb / 10.0);
+        presenceHoldHops = std::max (1, (int) std::lround (settings.presenceHoldMs * hopsPerSecond / 1000.0));
         reset();
     }
 
@@ -97,6 +112,9 @@ public:
         gainStep = 0.0;
         lastInputPower = 0.0;
         bypassMix = bypassTarget;
+        present = false;
+        presentMix = 0.0;
+        holdHopsLeft = 0;
     }
 
     // Bypassed: unity gain, and nothing contributed to the group's sum, so the other channels
@@ -159,6 +177,7 @@ public:
     double getLastInputPower() const noexcept { return lastInputPower; }
     double getCurrentGain() const noexcept { return currentGain; }
     bool isBypassed() const noexcept { return bypassTarget > 0.5; }
+    bool isPresent() const noexcept { return present; }
 
 private:
     void endHop (int64_t hopIndex, PeerLevels* peers) noexcept
@@ -172,23 +191,50 @@ private:
         const double coeff = logIn > logState ? attackCoeff : releaseCoeff;
         smoothedPower = std::exp (logIn + coeff * (logState - logIn));
 
-        if (bypassMix < bypassTarget)
-            bypassMix = std::min (bypassTarget, bypassMix + bypassStep);
-        else if (bypassMix > bypassTarget)
-            bypassMix = std::max (bypassTarget, bypassMix - bypassStep);
+        updatePresence (smoothedPower / weightPower);
+
+        bypassMix = stepTowards (bypassMix, bypassTarget);
+        presentMix = stepTowards (presentMix, present ? 1.0 : 0.0);
+
+        // How much this channel takes part: 0 when bypassed or without signal (unity gain,
+        // nothing shared), 1 when fully in, faded in between.
+        const double active = (1.0 - bypassMix) * presentMix;
 
         double peerSum = 0.0;
         if (peers != nullptr)
         {
-            peers->publish (hopIndex, smoothedPower * (1.0 - bypassMix));
+            peers->publish (hopIndex, smoothedPower * active);
             peerSum = peers->sumOfPeerPowers (hopIndex);
         }
 
-        targetGain = bypassMix + (1.0 - bypassMix) * automixGain (smoothedPower, peerSum);
+        targetGain = (1.0 - active) + active * automixGain (smoothedPower, peerSum);
         gainStep = (targetGain - currentGain) / EngineSettings::hopSize;
 
         hopAccumulator = 0.0;
         hopFill = 0;
+    }
+
+    void updatePresence (double level) noexcept
+    {
+        if (level >= presenceOnPower)
+        {
+            present = true;
+            holdHopsLeft = presenceHoldHops;
+        }
+        else if (present && level < presenceOffPower)
+        {
+            if (--holdHopsLeft <= 0)
+                present = false;
+        }
+        else if (present)
+        {
+            holdHopsLeft = presenceHoldHops;
+        }
+    }
+
+    double stepTowards (double value, double target) const noexcept
+    {
+        return value < target ? std::min (target, value + bypassStep) : std::max (target, value - bypassStep);
     }
 
     static int64_t floorDiv (int64_t a, int64_t b) noexcept
@@ -214,6 +260,11 @@ private:
     double lastInputPower = 0.0;
     double currentGain = 1.0, targetGain = 1.0, gainStep = 0.0;
     double bypassTarget = 0.0, bypassMix = 0.0, bypassStep = 1.0;
+
+    double presenceOnPower = 0.0, presenceOffPower = 0.0;
+    int presenceHoldHops = 1, holdHopsLeft = 0;
+    bool present = false;
+    double presentMix = 0.0;
 };
 
 } // namespace sgtm

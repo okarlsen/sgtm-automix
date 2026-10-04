@@ -35,6 +35,12 @@ compressor (compression flattens the level differences it relies on).
 - **Bypass** puts the channel at unity gain and takes it out of the gain
   sharing, so the other channels share as if it were not there. It fades
   over 20 ms and follows the host's own bypass button.
+- **No signal:** a channel whose level stays below −81 dBFS for a second
+  (fader down, muted, nothing connected) drops out of the sharing and sits at
+  unity, so it doesn't take a share from the others. It rejoins as soon as
+  its level reaches −75 dBFS, fading in over 20 ms. An open mic's room tone
+  sits above that, so quiet open mics still count. The channel list marks
+  these channels NO SIGNAL.
 - **Group** (A, B or C) picks which automix the channel belongs to. Gain is
   shared only among channels in the same group, so up to three automixes
   can run at once, for example one per panel. Changing it fades over 20 ms.

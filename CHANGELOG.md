@@ -16,6 +16,8 @@ All notable changes to SGTM Automix are documented here. Versions follow
 - Groups A, B and C: gain is shared only within a group, so three automixes
   can run at once.
 - Gain meters show the gain each channel lets through, 0 to −15 dB.
+- Channels without signal (below −81 dBFS for a second; back in at −75 dBFS)
+  take no share, so a faded-down channel doesn't turn the others down.
 
 ## [0.1.0] — development skeleton (not released)
 
