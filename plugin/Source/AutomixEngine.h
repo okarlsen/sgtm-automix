@@ -188,9 +188,14 @@ public:
         hopFill = static_cast<int> (positiveModulo (startSample, EngineSettings::hopSize));
 
         // Transport jumped (locate, loop): drop the partial hop. If the jump lands mid-hop, that
-        // first hop is measured over fewer samples, which the smoothing absorbs.
+        // first hop is measured over fewer samples, which the smoothing absorbs. A gain ramp still
+        // running is re-sized to end on its target with that shorter hop; left as it was, it would
+        // run past the target (even below zero) by the samples the jump added.
         if (startSample != expectedNextSample)
+        {
             hopAccumulator = 0.0;
+            gainStep = (targetGain - currentGain) / (EngineSettings::hopSize - hopFill);
+        }
 
         for (int i = 0; i < numSamples; ++i)
         {

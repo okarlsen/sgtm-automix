@@ -75,9 +75,11 @@ void AutomixProcessor::prepareToPlay (double sampleRate, int)
     outputGain.setCurrentAndTargetValue (bypass->load() >= 0.5f ? 1.0f
                                                                 : juce::Decibels::decibelsToGain (outputGainDb->load()));
     samplePosition = 0;
+    wasOffline = isNonRealtime();
     link.prepare (sampleRate);
     link.setGroup (getGroup(), true);
     link.join();
+    publishShownGroup();
     triggerAsyncUpdate(); // republish the name from the message thread (hosts may call this from others)
 }
 
@@ -101,6 +103,12 @@ void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     // Offline, take the block's position from the host timeline so every instance agrees on hop
     // numbers. Live, keep counting: peers are matched by their newest value.
     const bool offline = isNonRealtime();
+    if (offline != wasOffline)
+    {
+        engine.reset();
+        wasOffline = offline;
+    }
+
     int64_t startSample = samplePosition;
     if (offline)
         if (auto* playHead = getPlayHead())
@@ -109,6 +117,7 @@ void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
                     startSample = *time;
 
     link.setGroup (getGroup());
+    publishShownGroup();
     link.beginBlock (InstanceLink::steadyNowNs(), offline, startSample, numSamples);
     meters.numPeers.store (link.getNumPeers(), std::memory_order_relaxed);
 
@@ -213,7 +222,11 @@ juce::String AutomixProcessor::getDisplayedLabel() const
     return userLabel.isNotEmpty() ? userLabel : trackName;
 }
 
-void AutomixProcessor::handleAsyncUpdate() { publishLabel(); }
+void AutomixProcessor::handleAsyncUpdate()
+{
+    publishLabel();
+    publishShownGroup();
+}
 
 void AutomixProcessor::publishLabel() { link.setLabel (getDisplayedLabel().toStdString()); }
 

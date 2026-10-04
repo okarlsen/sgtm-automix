@@ -22,8 +22,9 @@
 // channel to another group crossfades its membership over a few milliseconds, both in its own sum
 // and in what the other channels see, so the move is click-free.
 //
-// Peers whose heartbeat is older than a second drop out. A slot whose owner process has died is
-// reclaimed by the next instance that needs one.
+// Peers whose heartbeat is older than a second drop out, fading out over the last 200 ms so the
+// others do not jump. A slot whose owner process has died is reclaimed by the next instance that
+// needs one.
 
 #include "AutomixEngine.h"
 
@@ -60,7 +61,7 @@ constexpr uint32_t magic = 0x53414d31;
 
 // Bump whenever Shared or Slot changes. New fields can fit in a slot's alignment padding without
 // changing its size, so the size alone does not tell layouts apart.
-constexpr int layoutVersion = 4;
+constexpr int layoutVersion = 5;
 constexpr int maxSlots = 64;
 constexpr int ringHops = 8192;          // ~2.7 s at 48 kHz with 16-sample hops
 constexpr int labelBytes = 48;
@@ -101,6 +102,10 @@ struct alignas (64) Slot
     // Group membership, written by the owner's audio thread. While moving, the channel counts
     // (1 - fade) in prevGroup and fade in group.
     std::atomic<uint32_t> group, prevGroup, fadeBits;
+
+    // The group the channel list shows: the owner's Group setting, also while the host is not
+    // processing the track (membership above only changes while processing).
+    std::atomic<uint32_t> shownGroup;
 
     // Label, written by the owner's message thread. Even seq = stable.
     std::atomic<uint32_t> labelSeq;
@@ -183,6 +188,7 @@ inline bool channelListOrder (const LinkedChannelInfo& a, const LinkedChannelInf
 struct InstanceLinkSettings
 {
     int64_t aliveNs = 1'000'000'000;       // peers silent for longer drop out
+    int64_t dropFadeNs = 200'000'000;      // and fade out over this time before that
     int64_t reclaimNs = 2'000'000'000;     // a dead owner's slot can be reused after this
     int64_t waitBudgetNs = 5'000'000;      // offline: total wait per block
     int64_t runMarginNs = 250'000'000;     // offline: a peer run that began this much earlier is a previous pass
@@ -299,7 +305,9 @@ public:
 
                     // The all-channels switch lives as long as the shared block (until restart),
                     // so a new session never starts with the automix off from an earlier one.
-                    if (! anyOtherAlive (nowNs))
+                    // Channels that are loaded but idle (Logic with the transport stopped) still
+                    // count as the current session.
+                    if (! anyOtherLoaded())
                         shared->automixOff.store (0, std::memory_order_release);
                     return true;
                 }
@@ -335,8 +343,22 @@ public:
     void setLabel (const std::string& newLabel)
     {
         const std::lock_guard<std::mutex> lock (labelMutex);
-        label = newLabel.substr (0, linkdetail::labelBytes - 1);
+
+        // Cut to fit, never inside a UTF-8 character (continuation bytes are 10xxxxxx).
+        size_t length = std::min (newLabel.size(), (size_t) linkdetail::labelBytes - 1);
+        if (length < newLabel.size())
+            while (length > 0 && (static_cast<unsigned char> (newLabel[length]) & 0xc0) == 0x80)
+                --length;
+        label = newLabel.substr (0, length);
         publishLabel();
+    }
+
+    // The group shown for this channel in every channel list. Any thread.
+    void setShownGroup (int newGroup) noexcept
+    {
+        shownGroup.store (std::clamp (newGroup, 0, linkdetail::numGroups - 1), std::memory_order_relaxed);
+        if (self != nullptr)
+            self->shownGroup.store ((uint32_t) shownGroup.load (std::memory_order_relaxed), std::memory_order_relaxed);
     }
 
     // Every loaded channel, this one included, in slot order: processing ones, and idle ones whose
@@ -360,7 +382,7 @@ public:
             info.slot = i;
             info.isSelf = isSelf;
             info.idle = ! processing;
-            info.group = (int) s.group.load (std::memory_order_relaxed);
+            info.group = (int) s.shownGroup.load (std::memory_order_relaxed);
             info.label = readLabel (s);
             if (info.label.empty())
                 info.label = "Channel " + std::to_string (i + 1);
@@ -400,6 +422,10 @@ public:
             self->runStartNs.store (nowNs, std::memory_order_release);
             myRunStartNs = nowNs;
             running = true;
+
+            // A new bounce starts the offline back-off afresh for every peer.
+            for (auto& st : peerState)
+                st = { st.owner, 0, 0 };
         }
         expectedNextSample = startSample + numSamples;
 
@@ -423,6 +449,9 @@ public:
             auto& p = peers[(size_t) numListed++];
             p.slot = &s;
             p.state = &state;
+            // A peer the host has stopped running fades out before it drops out.
+            const int64_t age = nowNs - s.heartbeatNs.load (std::memory_order_relaxed);
+            p.fade = std::clamp ((double) (settings.aliveNs - age) / (double) settings.dropFadeNs, 0.0, 1.0);
             // Offline, every peer is read by position. A peer that is still running live (the
             // host has not switched it to the bounce yet) or is on a previous pass is waited for.
             p.exact = isOffline;
@@ -516,6 +545,7 @@ public:
             double weight = groupFade * membership (*p.slot, group);
             if (groupFade < 1.0)
                 weight += (1.0 - groupFade) * membership (*p.slot, prevGroup);
+            weight *= p.fade;
             if (weight <= 0.0)
                 continue;
             sum += weight * (p.exact ? exactPower (p, hopIndex) : latestPower (*p.slot));
@@ -536,6 +566,7 @@ private:
         linkdetail::Slot* slot = nullptr;
         PeerState* state = nullptr;
         bool exact = false;
+        double fade = 1.0;
     };
 
     // How much a peer counts in group g: 1 when settled there, partly while moving in or out.
@@ -597,6 +628,10 @@ private:
                 }
                 return latestPower (s);
             }
+
+            // The peer arrived within the budget, so it renders alongside this channel: the next
+            // timeout starts the back-off from the beginning again.
+            st.strikes = 0;
         }
 
         double power;
@@ -634,10 +669,10 @@ private:
         return hb != 0 && nowNs - hb < settings.aliveNs;
     }
 
-    bool anyOtherAlive (int64_t nowNs) const noexcept
+    bool anyOtherLoaded() const noexcept
     {
         for (const auto& s : shared->slots)
-            if (&s != self && isAlive (s, nowNs))
+            if (&s != self && isLoaded (s))
                 return true;
         return false;
     }
@@ -686,6 +721,7 @@ private:
         s.group.store ((uint32_t) group, std::memory_order_relaxed);
         s.prevGroup.store ((uint32_t) group, std::memory_order_relaxed);
         s.fadeBits.store (linkdetail::toBits (1.0f), std::memory_order_relaxed);
+        s.shownGroup.store ((uint32_t) shownGroup.load (std::memory_order_relaxed), std::memory_order_relaxed);
         for (auto& e : s.ring)
             e.tag.store (0, std::memory_order_relaxed);
         std::atomic_thread_fence (std::memory_order_release);
@@ -789,6 +825,11 @@ private:
             munmap (mem, sizeof (linkdetail::Shared));
             return fail ("shared block is from another plug-in version", 0);
         }
+
+        // Touch every slot's header here, so the audio thread's first look at the peers does not
+        // page-fault.
+        for (const auto& s : shared->slots)
+            (void) s.heartbeatNs.load (std::memory_order_relaxed);
         return shared;
 #else
         (void) name;
@@ -813,6 +854,7 @@ private:
     int numPeers = 0, numListed = 0;
     int group = 0, prevGroup = 0;
     double groupFade = 1.0, groupFadeStep = 1.0;
+    std::atomic<int> shownGroup { 0 };
     std::array<Peer, linkdetail::maxSlots> peers {};
     std::array<PeerState, linkdetail::maxSlots> peerState {};
 };

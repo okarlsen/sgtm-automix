@@ -28,7 +28,10 @@ public:
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+    // Hosts that stop running a plug-in once its input goes silent (Logic, after a region ends)
+    // keep running it this long, so the channel's level decays and it leaves the sharing on its
+    // own instead of holding the others down with its last level. Matches the no-signal hold.
+    double getTailLengthSeconds() const override { return 1.0; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -90,6 +93,10 @@ public:
     static juce::String groupName (int group) { return juce::String::charToString ((juce::juce_wchar) ('A' + group)); }
     int getGroup() const noexcept { return (int) groupParam->load(); }
 
+    // Shows this channel's Group setting in every channel list, also while the host is not
+    // processing the track. Any thread.
+    void publishShownGroup() noexcept { link.setShownGroup (getGroup()); }
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
@@ -111,6 +118,11 @@ private:
     // host gives one, so all instances agree on hop boundaries; live, each instance counts its own
     // (live peers are matched by newest value, not by position).
     int64_t samplePosition = 0;
+
+    // Whether the previous block was rendered offline. Entering or leaving a bounce starts the
+    // engine afresh, so every host starts a bounce the same way (Logic re-prepares the plug-in
+    // for it, Pro Tools does not).
+    bool wasOffline = false;
 
     juce::String userLabel;
     juce::Point<int> editorSize { 0, 0 };
