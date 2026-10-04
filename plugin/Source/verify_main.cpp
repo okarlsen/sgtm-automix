@@ -486,6 +486,26 @@ void linkTests()
                "a channel switching from stereo to mono keeps its share without a jump", biggestStep, 0.05);
     }
 
+    std::printf ("\nFade-up\n");
+    {
+        // Ten open mics at room tone; one starts talking at -20 dBFS. With the 15 ms attack it
+        // should reach within 1 dB of full gain in roughly 7 ms (about 3 ms with the old 5 ms).
+        LinkTestName shm;
+        const int total = 48000 * 3, onset = 48000 * 2;
+        auto chans = makeLinkedChannels (shm.name, std::vector<double> (10, -71.4), total);
+        auto talk = noise (total - onset, -20.0, 4242u);
+        std::copy (talk.begin(), talk.end(), chans[0].audio.begin() + onset);
+        double reachedMs = -1.0;
+        for (int pos = 0; pos + 64 <= total; pos += 64)
+        {
+            for (auto& c : chans)
+                processBlock (c, pos, 64, false, 1'000'000'000 + pos * nsPerSample);
+            if (reachedMs < 0.0 && pos >= onset && sgtm::gainToDb (chans[0].engine.getCurrentGain()) >= -1.0)
+                reachedMs = (pos + 64 - onset) / 48.0;
+        }
+        check (reachedMs > 4.0 && reachedMs < 12.0, "a lone talker reaches within 1 dB of full gain (ms)", reachedMs, 7.0);
+    }
+
     std::printf ("\nSignal presence\n");
     {
         LinkTestName shm;

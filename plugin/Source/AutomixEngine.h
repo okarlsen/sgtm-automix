@@ -37,7 +37,9 @@ struct EngineSettings
     // positions, so every instance in a session agrees on which samples belong to which hop.
     static constexpr int hopSize = 16;
 
-    double attackMs = 5.0;
+    // 15 ms (was 5 ms): a slightly softer fade-up on word starts. A lone talker among ten open
+    // mics reaches within 1 dB of full gain in about 7 ms (about 3 ms with 5 ms).
+    double attackMs = 15.0;
     double releaseMs = 200.0;
 
     // Bypass fades the channel to unity gain, and its share out of the group, over this time.
