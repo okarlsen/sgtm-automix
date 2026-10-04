@@ -60,6 +60,7 @@ public:
 
     // The all-channels switch, shared by every linked instance (not saved with the session).
     bool isAutomixOnForAll() const noexcept { return link.isAutomixOn(); }
+    bool isBypassed() const noexcept { return bypass->load() >= 0.5f; }
     void setAutomixOnForAll (bool on) noexcept { link.setAutomixOn (on); }
     std::vector<LinkedChannelInfo> getLinkedChannels() const { return link.getChannels(); }
 

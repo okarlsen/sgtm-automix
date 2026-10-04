@@ -7,25 +7,34 @@ namespace sgtm
 //==================================================================================================
 namespace
 {
-// Gain-reduction scale shared by the GAIN meter and the channel list: 0 to -20 dB, so the -10 dB
-// that ten equal mics settle at sits half way. Anything below -20 dB fills the bar.
-constexpr float reductionRangeDb = 20.0f;
-constexpr float reductionTicksDb[] = { 0.0f, -3.0f, -6.0f, -10.0f, -20.0f };
+// Gain scale shared by the GAIN meter and the channel list: the gain a channel lets through, full
+// at 0 dB and empty at -15 dB, linear in dB. A channel talking alone reads full; two equal channels
+// read -3 dB; ten equal idle channels read -10 dB, two thirds down.
+constexpr float gainRangeDb = 15.0f;
+constexpr float gainTicksDb[] = { 0.0f, -3.0f, -6.0f, -9.0f, -12.0f, -15.0f };
 
-float reductionProportion (float gainDb) { return juce::jlimit (0.0f, 1.0f, -gainDb / reductionRangeDb); }
+float gainProportion (float gainDb) { return juce::jlimit (0.0f, 1.0f, (gainDb + gainRangeDb) / gainRangeDb); }
 } // namespace
 
-LevelMeter::LevelMeter (juce::String labelText, float min, float max, juce::Colour barColour, bool isReductionMeter)
-    : label (std::move (labelText)), minDb (min), maxDb (max), colour (barColour), reduction (isReductionMeter),
-      displayDb (isReductionMeter ? max : min)
+LevelMeter::LevelMeter (juce::String labelText, float min, float max, juce::Colour barColour, bool showTicks)
+    : label (std::move (labelText)), minDb (min), maxDb (max), colour (barColour), ticks (showTicks), displayDb (min)
 {
+}
+
+void LevelMeter::setDimmed (bool shouldBeDimmed)
+{
+    if (dimmed != shouldBeDimmed)
+    {
+        dimmed = shouldBeDimmed;
+        repaint();
+    }
 }
 
 void LevelMeter::setLevelDb (float db)
 {
-    // Level: instant rise, ~20 dB/s fall at 30 Hz refresh. Reduction: instant, ~20 dB/s recovery.
+    // Instant rise, ~20 dB/s fall at 30 Hz refresh.
     db = juce::jlimit (minDb, maxDb, db);
-    const float next = reduction ? std::min (db, displayDb + 0.7f) : std::max (db, displayDb - 0.7f);
+    const float next = std::max (db, displayDb - 0.7f);
     if (! juce::approximatelyEqual (next, displayDb))
     {
         displayDb = next;
@@ -42,14 +51,14 @@ void LevelMeter::paint (juce::Graphics& g)
     g.setColour (juce::Colour (0xff202124));
     g.fillRoundedRectangle (bar, 3.0f);
 
-    if (reduction)
-    {
-        const float proportion = (maxDb - displayDb) / (maxDb - minDb);
-        g.setColour (colour);
-        g.fillRoundedRectangle (bar.withHeight (bar.getHeight() * proportion), 3.0f);
+    const float proportion = (displayDb - minDb) / (maxDb - minDb);
+    g.setColour (dimmed ? colour.withAlpha (0.3f) : colour);
+    g.fillRoundedRectangle (bar.withTop (bar.getBottom() - bar.getHeight() * proportion), 3.0f);
 
+    if (ticks)
+    {
         g.setFont (9.0f);
-        for (float tick : reductionTicksDb)
+        for (float tick : gainTicksDb)
         {
             const float y = bar.getY() + bar.getHeight() * (maxDb - tick) / (maxDb - minDb);
             g.setColour (juce::Colours::white.withAlpha (0.35f));
@@ -60,13 +69,6 @@ void LevelMeter::paint (juce::Graphics& g)
             g.drawText (juce::String ((int) tick), text, juce::Justification::centredLeft);
         }
     }
-    else
-    {
-        const float proportion = (displayDb - minDb) / (maxDb - minDb);
-        auto filled = bar.withTop (bar.getBottom() - bar.getHeight() * proportion);
-        g.setColour (colour);
-        g.fillRoundedRectangle (filled, 3.0f);
-    }
 
     g.setColour (juce::Colours::lightgrey);
     g.setFont (12.0f);
@@ -74,7 +76,7 @@ void LevelMeter::paint (juce::Graphics& g)
 }
 
 //==================================================================================================
-void ChannelList::setChannels (std::vector<LinkedChannelInfo> newChannels)
+void ChannelList::setChannels (std::vector<LinkedChannelInfo> newChannels, bool automixOn)
 {
     auto same = [] (const LinkedChannelInfo& a, const LinkedChannelInfo& b)
     {
@@ -84,11 +86,12 @@ void ChannelList::setChannels (std::vector<LinkedChannelInfo> newChannels)
                && q (a.gainDb) == q (b.gainDb) && q (a.weightDb) == q (b.weightDb) && a.bypassed == b.bypassed && a.idle == b.idle;
     };
 
-    if (newChannels.size() == channels.size()
+    if (automixOn == allOn && newChannels.size() == channels.size()
         && std::equal (newChannels.begin(), newChannels.end(), channels.begin(), same))
         return;
 
     channels = std::move (newChannels);
+    allOn = automixOn;
     setSize (getWidth(), headerHeight + std::max (1, (int) channels.size()) * rowHeight);
     repaint();
 }
@@ -113,7 +116,7 @@ void ChannelList::paint (juce::Graphics& g)
         g.drawText ("Gain dB", row.removeFromRight (56), juce::Justification::centredRight);
         row.removeFromRight (6);
         g.drawText ("Input", row.removeFromLeft (row.getWidth() / 2), juce::Justification::centredLeft);
-        g.drawText ("Gain reduction", row.withTrimmedLeft (4), juce::Justification::centredLeft);
+        g.drawText ("Gain", row.withTrimmedLeft (4), juce::Justification::centredLeft);
     }
 
     if (channels.empty())
@@ -163,11 +166,12 @@ void ChannelList::paint (juce::Graphics& g)
         const auto half = bars.getWidth() / 2.0f - 2.0f;
         drawBar (bars.withWidth (half), (c.inputDb + 60.0f) / 60.0f, juce::Colour (0xff4caf50));
         const auto gainBar = bars.withTrimmedLeft (half + 4.0f);
-        drawBar (gainBar, reductionProportion (c.gainDb), juce::Colour (0xffffb300));
+        const auto gainColour = juce::Colour (0xffffb300);
+        drawBar (gainBar, gainProportion (c.gainDb), c.bypassed || ! allOn ? gainColour.withAlpha (0.3f) : gainColour);
         g.setColour (juce::Colours::white.withAlpha (0.35f));
-        for (float tick : reductionTicksDb)
-            if (tick < 0.0f && tick > -reductionRangeDb)
-                g.drawVerticalLine ((int) std::round (gainBar.getX() + gainBar.getWidth() * reductionProportion (tick)),
+        for (float tick : gainTicksDb)
+            if (tick < 0.0f && tick > -gainRangeDb)
+                g.drawVerticalLine ((int) std::round (gainBar.getX() + gainBar.getWidth() * gainProportion (tick)),
                                     gainBar.getY(), gainBar.getBottom());
     }
 }
@@ -335,7 +339,8 @@ void AutomixEditor::timerCallback()
     if (! nameEditor.isBeingEdited() && nameEditor.getText() != processor.getDisplayedLabel())
         nameEditor.setText (processor.getDisplayedLabel(), juce::dontSendNotification);
 
-    channelList.setChannels (channels);
+    channelList.setChannels (channels, processor.isAutomixOnForAll());
+    gainMeter.setDimmed (processor.isBypassed() || ! processor.isAutomixOnForAll());
 }
 
 } // namespace sgtm
