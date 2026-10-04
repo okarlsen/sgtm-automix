@@ -71,7 +71,8 @@ void AutomixProcessor::prepareToPlay (double sampleRate, int)
     engine.setWeightDb (weightDb->load());
     engine.setBypassed (bypass->load() >= 0.5f || ! link.isAutomixOn(), true);
     outputGain.reset (sampleRate, 0.02);
-    outputGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (outputGainDb->load()));
+    outputGain.setCurrentAndTargetValue (bypass->load() >= 0.5f ? 1.0f
+                                                                : juce::Decibels::decibelsToGain (outputGainDb->load()));
     samplePosition = 0;
     link.prepare (sampleRate);
     link.setGroup (getGroup(), true);
@@ -118,7 +119,9 @@ void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
                     link.isJoined() ? &link : nullptr);
     samplePosition = startSample + numSamples;
 
-    outputGain.setTargetValue (juce::Decibels::decibelsToGain (outputGainDb->load()));
+    // Bypassed (by the host or with the Bypass button, which are the same parameter), the audio
+    // passes unchanged: the Output trim fades to unity along with the automix gain.
+    outputGain.setTargetValue (channelBypassed ? 1.0f : juce::Decibels::decibelsToGain (outputGainDb->load()));
     if (outputGain.isSmoothing())
     {
         for (int i = 0; i < numSamples; ++i)

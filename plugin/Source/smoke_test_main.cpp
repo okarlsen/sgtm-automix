@@ -199,6 +199,21 @@ void testLinked (juce::AudioPluginFormatManager& formats, const juce::String& pa
         bypass->setValueNotifyingHost (0.0f);
     }
 
+    // Host bypass with an Output trim set: audio must pass through unchanged, trim included.
+    if (bypass != nullptr)
+        if (auto* outGain = findParam (*a, "Output Gain"))
+        {
+            outGain->setValueNotifyingHost (0.5f); // -6 dB
+            a->getBypassParameter()->setValueNotifyingHost (1.0f);
+            std::tie (outA, outB) = runBoth (750);
+            check (maxDiff (outA, input) == 0.0f, "host bypass passes audio unchanged, Output trim included (bit-exact)");
+            a->getBypassParameter()->setValueNotifyingHost (0.0f);
+            std::tie (outA, outB) = runBoth (750);
+            const float shared = juce::Decibels::decibelsToGain (-3.01f) * juce::Decibels::decibelsToGain (-6.0f);
+            check (maxDiff (outA, input, shared) < 0.01f, "un-bypassed, the trim and the sharing apply again");
+            outGain->setValueNotifyingHost (2.0f / 3.0f); // back to 0 dB
+        }
+
     // Track names reach the list in any order of name, layout change and prepare, and a name the
     // user typed beats the host's.
     {

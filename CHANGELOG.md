@@ -18,6 +18,10 @@ All notable changes to SGTM Automix are documented here. Versions follow
 - Gain meters show the gain each channel lets through, 0 to −15 dB.
 - Channels without signal (below −81 dBFS for a second; back in at −75 dBFS)
   take no share, so a faded-down channel doesn't turn the others down.
+- Bypass (also the host's) now passes audio unchanged: the Output trim fades
+  to 0 dB too.
+- AAX prepared (untested, no Pro Tools build yet): multi-mono, AudioSuite
+  and Pro Tools' dynamic plug-in processing are turned off.
 - The level detector listens to the voice band only (150 Hz to 5 kHz
   band-pass on its copy; the audio is untouched), so rumble and hiss take no
   share and a channel with only rumble counts as no signal.
