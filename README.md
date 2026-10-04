@@ -27,8 +27,8 @@ and share gain, live and in offline bounces. Not released.
 
 Insert SGTM Automix on each speech track, after EQ and before any
 compressor (compression flattens the level differences it relies on).
-It is meant to be inserted post-fader, as Yamaha recommends for its own
-automixer, and works best with one microphone per talker.
+It is meant to be inserted post-fader, and works best with one microphone
+per talker.
 
 - **Weight** sets a channel's priority. It changes how loud the channel looks
   to the automixer, not its audio level. Balance the weights so all GAIN
