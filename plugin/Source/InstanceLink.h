@@ -110,6 +110,7 @@ struct LinkedChannelInfo
     std::string label;
     float inputDb = -120.0f, gainDb = 0.0f, outputDb = -120.0f, weightDb = 0.0f;
     bool bypassed = false;
+    bool idle = false; // loaded but not processing (for example Logic with the transport stopped)
 };
 
 //==================================================================================================
@@ -249,7 +250,9 @@ public:
         publishLabel();
     }
 
-    // Every live channel, this one included, in slot order. Allocates; message thread only.
+    // Every loaded channel, this one included, in slot order: processing ones, and idle ones whose
+    // process is still running (hosts such as Logic stop processing tracks while stopped).
+    // Allocates and makes syscalls; message thread only.
     std::vector<LinkedChannelInfo> getChannels (int64_t nowNs = steadyNowNs()) const
     {
         std::vector<LinkedChannelInfo> result;
@@ -260,12 +263,14 @@ public:
         {
             const auto& s = shared->slots[i];
             const bool isSelf = &s == self;
-            if (! isSelf && ! isAlive (s, nowNs))
+            const bool processing = isAlive (s, nowNs);
+            if (! isSelf && ! processing && ! isLoaded (s))
                 continue;
 
             LinkedChannelInfo info;
             info.slot = i;
             info.isSelf = isSelf;
+            info.idle = ! processing;
             info.label = readLabel (s);
             if (info.label.empty())
                 info.label = "Channel " + std::to_string (i + 1);
@@ -469,6 +474,19 @@ private:
             if (&s != self && isAlive (s, nowNs))
                 return true;
         return false;
+    }
+
+    // Claimed by a process that is still running (an instance that exists but may not process).
+    static bool isLoaded (const linkdetail::Slot& s) noexcept
+    {
+        if (s.owner.load (std::memory_order_acquire) == 0)
+            return false;
+#if SGTM_LINK_POSIX
+        const pid_t pid = (pid_t) s.pid.load (std::memory_order_relaxed);
+        return pid > 0 && (kill (pid, 0) == 0 || errno == EPERM);
+#else
+        return true;
+#endif
     }
 
     bool isReclaimable (const linkdetail::Slot& s, int64_t nowNs) const noexcept

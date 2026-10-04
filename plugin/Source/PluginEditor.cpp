@@ -50,7 +50,7 @@ void ChannelList::setChannels (std::vector<LinkedChannelInfo> newChannels)
         // Compare at display resolution so an idle list does not repaint.
         auto q = [] (float db) { return (int) std::lround (db * 2.0f); };
         return a.slot == b.slot && a.isSelf == b.isSelf && a.label == b.label && q (a.inputDb) == q (b.inputDb)
-               && q (a.gainDb) == q (b.gainDb) && q (a.weightDb) == q (b.weightDb) && a.bypassed == b.bypassed;
+               && q (a.gainDb) == q (b.gainDb) && q (a.weightDb) == q (b.weightDb) && a.bypassed == b.bypassed && a.idle == b.idle;
     };
 
     if (newChannels.size() == channels.size()
@@ -109,6 +109,13 @@ void ChannelList::paint (juce::Graphics& g)
         g.setColour (c.isSelf ? juce::Colours::white : juce::Colours::lightgrey);
         g.setFont (juce::FontOptions (12.0f, c.isSelf ? juce::Font::bold : juce::Font::plain));
         g.drawText (c.label, row.removeFromLeft (120), juce::Justification::centredLeft, true);
+
+        if (c.idle)
+        {
+            g.setColour (juce::Colours::grey);
+            g.drawText ("idle: host is not processing this track", row, juce::Justification::centredLeft, true);
+            continue;
+        }
 
         auto weightArea = row.removeFromRight (64);
         g.setColour (c.bypassed ? juce::Colour (0xffef5350) : juce::Colours::grey);
@@ -259,14 +266,27 @@ void AutomixEditor::timerCallback()
     gainMeter.setLevelDb (m.automixGainDb.load (std::memory_order_relaxed));
     outputMeter.setLevelDb (m.outputDb.load (std::memory_order_relaxed));
 
+    const auto channels = processor.getLinkedChannels();
+    int idle = 0;
+    bool selfIdle = false;
+    for (const auto& c : channels)
+    {
+        idle += (! c.isSelf && c.idle) ? 1 : 0;
+        selfIdle = selfIdle || (c.isSelf && c.idle);
+    }
+
     juce::String status;
     if (! processor.isLinkAvailable())
         status = "Link unavailable: running solo";
     else
     {
         const int peers = m.numPeers.load (std::memory_order_relaxed);
-        status = peers == 0 ? "Solo: no other channels found"
+        status = peers == 0 ? juce::String ("Solo: no other channels processing")
                             : "Linked with " + juce::String (peers) + " other channel" + (peers == 1 ? "" : "s");
+        if (idle > 0)
+            status << ", " << idle << " idle";
+        if (selfIdle)
+            status = "Idle: the host is not processing this track";
     }
     if (! processor.isAutomixOnForAll())
         status = "Automix OFF on all channels";
@@ -278,7 +298,7 @@ void AutomixEditor::timerCallback()
     if (! nameEditor.isBeingEdited() && nameEditor.getText() != processor.getDisplayedLabel())
         nameEditor.setText (processor.getDisplayedLabel(), juce::dontSendNotification);
 
-    channelList.setChannels (processor.getLinkedChannels());
+    channelList.setChannels (channels);
 }
 
 } // namespace sgtm

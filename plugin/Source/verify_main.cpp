@@ -414,11 +414,13 @@ void linkTests()
         const bool sawB = list.size() == 2 && list[1].label == "Pastor" && list[1].weightDb == 2.0f && ! list[1].isSelf;
         check (a.getNumPeers() == 1 && sawB, "a running peer is counted and its name and levels are visible");
         a.beginBlock (t + 1'500'000'000, false, 64, 64);
-        check (a.getNumPeers() == 0 && a.getChannels (t + 1'500'000'000).size() == 1,
-               "a peer that stops processing drops out after 1 s");
+        const auto later = a.getChannels (t + 1'500'000'000);
+        check (a.getNumPeers() == 0, "a peer that stops processing drops out of the sharing after 1 s");
+        check (later.size() == 2 && later[1].idle && ! later[0].idle,
+               "and is still listed, as idle, while its instance is loaded");
         b.leave();
         a.beginBlock (t + 1'500'001'000, false, 128, 64);
-        check (a.getNumPeers() == 0, "a peer that leaves is gone");
+        check (a.getNumPeers() == 0 && a.getChannels (t + 1'500'001'000).size() == 1, "a peer that leaves is gone");
     }
 
     {
@@ -450,7 +452,7 @@ void linkTests()
 
         std::this_thread::sleep_for (std::chrono::milliseconds (1100));
         a.beginBlock (sgtm::InstanceLink::steadyNowNs(), false, 64, 64);
-        check (a.getNumPeers() == 0, "a crashed peer drops out");
+        check (a.getNumPeers() == 0 && a.getChannels().size() == 1, "a crashed peer drops out and is not listed");
 
         std::this_thread::sleep_for (std::chrono::milliseconds (1000));
         std::vector<std::unique_ptr<sgtm::InstanceLink>> more;
