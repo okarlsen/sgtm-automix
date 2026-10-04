@@ -75,6 +75,23 @@ plugins and needs a free Avid developer account. Shipping AAX needs Avid's
 PACE signing tools (wraptool and an iLok signing certificate), requested
 from Avid.
 
+To build and install an unsigned AAX for testing in Pro Tools Developer
+(development only; never package or publish it):
+
+```sh
+cd plugin
+cmake -B build-aax -S . -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DSGTM_BUILD_AAX=ON -DSGTM_BUILD_PROBE=OFF
+cmake --build build-aax --target SGTMAutomix_AAX -j8
+```
+
+The build copies `SGTM Automix.aaxplugin` into
+`/Library/Application Support/Avid/Audio/Plug-Ins`. If that folder is not
+writable for you, copy it there yourself with
+`sudo cp -R "build-aax/SGTMAutomix_artefacts/Release/AAX/SGTM Automix.aaxplugin" "/Library/Application Support/Avid/Audio/Plug-Ins/"`.
+Retail Pro Tools scans the same folder and will report the unsigned plugin
+as invalid; remove it from there when you are done testing.
+
 The AAX is set up for automixing, untested until it runs in Pro Tools:
 multi-mono is off (a stereo track gets one instance and one gain), AudioSuite
 is off (it processes a clip with no other channels to share with), and Pro
