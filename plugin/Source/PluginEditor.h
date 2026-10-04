@@ -13,6 +13,8 @@ public:
                 bool showTicks = false);
 
     void setLevelDb (float db);
+    // Two bars side by side (left, right) when stereo, one bar otherwise.
+    void setLevelsDb (float leftDb, float rightDb, bool stereo);
     void setDimmed (bool shouldBeDimmed);
     void paint (juce::Graphics&) override;
 
@@ -22,7 +24,8 @@ private:
     juce::Colour colour;
     bool ticks;
     bool dimmed = false;
-    float displayDb;
+    bool isStereo = false;
+    float displayDb[2];
 };
 
 // Every linked channel, one row each: name, input level, automix gain and weight. This

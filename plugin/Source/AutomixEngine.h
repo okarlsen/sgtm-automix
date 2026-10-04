@@ -85,6 +85,35 @@ inline double gainToDb (double gain, double floorDb = -120.0) noexcept
 }
 
 //==================================================================================================
+// Block RMS levels for the meters: each of the first two channels on its own (left and right on a
+// stereo track), and all channels together.
+struct BlockLevels
+{
+    float channelDb[2] { -120.0f, -120.0f };
+    float combinedDb = -120.0f;
+};
+
+inline BlockLevels measureLevels (const float* const* channels, int numChannels, int numSamples) noexcept
+{
+    BlockLevels levels;
+    if (numChannels <= 0 || numSamples <= 0)
+        return levels;
+
+    double total = 0.0;
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        double sum = 0.0;
+        for (int i = 0; i < numSamples; ++i)
+            sum += static_cast<double> (channels[ch][i]) * channels[ch][i];
+        total += sum;
+        if (ch < 2)
+            levels.channelDb[ch] = static_cast<float> (gainToDb (std::sqrt (sum / numSamples)));
+    }
+    levels.combinedDb = static_cast<float> (gainToDb (std::sqrt (total / (numChannels * numSamples))));
+    return levels;
+}
+
+//==================================================================================================
 // One automix channel: one plugin instance on one vocal track (mono or stereo).
 class AutomixChannel
 {

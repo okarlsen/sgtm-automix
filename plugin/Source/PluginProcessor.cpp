@@ -4,24 +4,6 @@
 namespace sgtm
 {
 
-namespace
-{
-float blockRmsDb (const juce::AudioBuffer<float>& buffer, int numChannels, int numSamples)
-{
-    if (numChannels == 0 || numSamples == 0)
-        return -120.0f;
-
-    double sum = 0.0;
-    for (int ch = 0; ch < numChannels; ++ch)
-    {
-        const float* data = buffer.getReadPointer (ch);
-        for (int i = 0; i < numSamples; ++i)
-            sum += static_cast<double> (data[i]) * data[i];
-    }
-    return static_cast<float> (gainToDb (std::sqrt (sum / (numChannels * numSamples))));
-}
-} // namespace
-
 AutomixProcessor::AutomixProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
@@ -107,8 +89,12 @@ void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     for (int ch = getTotalNumInputChannels(); ch < numChannels; ++ch)
         buffer.clear (ch, 0, numSamples);
 
-    const float inputDb = blockRmsDb (buffer, numChannels, numSamples);
+    const auto in = measureLevels (buffer.getArrayOfReadPointers(), numChannels, numSamples);
+    const float inputDb = in.combinedDb;
+    meters.numChannels.store (numChannels, std::memory_order_relaxed);
     meters.inputDb.store (inputDb, std::memory_order_relaxed);
+    meters.inputLeftDb.store (in.channelDb[0], std::memory_order_relaxed);
+    meters.inputRightDb.store (in.channelDb[1], std::memory_order_relaxed);
 
     // Offline, take the block's position from the host timeline so every instance agrees on hop
     // numbers. Live, keep counting: peers are matched by their newest value.
@@ -148,7 +134,10 @@ void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     }
 
     const auto automixDb = static_cast<float> (gainToDb (engine.getCurrentGain()));
-    const float outputDb = blockRmsDb (buffer, numChannels, numSamples);
+    const auto out = measureLevels (buffer.getArrayOfReadPointers(), numChannels, numSamples);
+    const float outputDb = out.combinedDb;
+    meters.outputLeftDb.store (out.channelDb[0], std::memory_order_relaxed);
+    meters.outputRightDb.store (out.channelDb[1], std::memory_order_relaxed);
     meters.automixGainDb.store (automixDb, std::memory_order_relaxed);
     meters.outputDb.store (outputDb, std::memory_order_relaxed);
     link.setDisplay (inputDb, automixDb, outputDb, weight, channelBypassed, engine.isPresent());

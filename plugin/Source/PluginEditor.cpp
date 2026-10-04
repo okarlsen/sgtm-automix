@@ -30,7 +30,7 @@ float gainProportion (float gainDb) { return juce::jlimit (0.0f, 1.0f, (gainDb +
 } // namespace
 
 LevelMeter::LevelMeter (juce::String labelText, float min, float max, juce::Colour barColour, bool showTicks)
-    : label (std::move (labelText)), minDb (min), maxDb (max), colour (barColour), ticks (showTicks), displayDb (min)
+    : label (std::move (labelText)), minDb (min), maxDb (max), colour (barColour), ticks (showTicks), displayDb { min, min }
 {
 }
 
@@ -43,16 +43,25 @@ void LevelMeter::setDimmed (bool shouldBeDimmed)
     }
 }
 
-void LevelMeter::setLevelDb (float db)
+void LevelMeter::setLevelDb (float db) { setLevelsDb (db, db, false); }
+
+void LevelMeter::setLevelsDb (float leftDb, float rightDb, bool stereo)
 {
     // Instant rise, ~20 dB/s fall at 30 Hz refresh.
-    db = juce::jlimit (minDb, maxDb, db);
-    const float next = std::max (db, displayDb - 0.7f);
-    if (! juce::approximatelyEqual (next, displayDb))
+    bool changed = stereo != isStereo;
+    isStereo = stereo;
+    const float dbs[2] = { leftDb, rightDb };
+    for (int i = 0; i < 2; ++i)
     {
-        displayDb = next;
-        repaint();
+        const float next = std::max (juce::jlimit (minDb, maxDb, dbs[i]), displayDb[i] - 0.7f);
+        if (! juce::approximatelyEqual (next, displayDb[i]))
+        {
+            displayDb[i] = next;
+            changed = true;
+        }
     }
+    if (changed)
+        repaint();
 }
 
 void LevelMeter::paint (juce::Graphics& g)
@@ -61,12 +70,25 @@ void LevelMeter::paint (juce::Graphics& g)
     auto labelArea = area.removeFromBottom (18);
     auto bar = area.reduced (4, 2).toFloat();
 
-    g.setColour (juce::Colour (0xff202124));
-    g.fillRoundedRectangle (bar, 3.0f);
+    auto drawBar = [&] (juce::Rectangle<float> r, float db)
+    {
+        g.setColour (juce::Colour (0xff202124));
+        g.fillRoundedRectangle (r, 3.0f);
+        const float proportion = (db - minDb) / (maxDb - minDb);
+        g.setColour (dimmed ? colour.withAlpha (0.3f) : colour);
+        g.fillRoundedRectangle (r.withTop (r.getBottom() - r.getHeight() * proportion), 3.0f);
+    };
 
-    const float proportion = (displayDb - minDb) / (maxDb - minDb);
-    g.setColour (dimmed ? colour.withAlpha (0.3f) : colour);
-    g.fillRoundedRectangle (bar.withTop (bar.getBottom() - bar.getHeight() * proportion), 3.0f);
+    if (isStereo)
+    {
+        const float half = (bar.getWidth() - 3.0f) / 2.0f;
+        drawBar (bar.withWidth (half), displayDb[0]);
+        drawBar (bar.withTrimmedLeft (half + 3.0f), displayDb[1]);
+    }
+    else
+    {
+        drawBar (bar, displayDb[0]);
+    }
 
     if (ticks)
     {
@@ -340,9 +362,12 @@ void AutomixEditor::resized()
 void AutomixEditor::timerCallback()
 {
     const auto& m = processor.getMeters();
-    inputMeter.setLevelDb (m.inputDb.load (std::memory_order_relaxed));
+    const bool stereo = m.numChannels.load (std::memory_order_relaxed) >= 2;
+    inputMeter.setLevelsDb (m.inputLeftDb.load (std::memory_order_relaxed),
+                            m.inputRightDb.load (std::memory_order_relaxed), stereo);
     gainMeter.setLevelDb (m.automixGainDb.load (std::memory_order_relaxed));
-    outputMeter.setLevelDb (m.outputDb.load (std::memory_order_relaxed));
+    outputMeter.setLevelsDb (m.outputLeftDb.load (std::memory_order_relaxed),
+                             m.outputRightDb.load (std::memory_order_relaxed), stereo);
 
     auto channels = processor.getLinkedChannels();
     std::stable_sort (channels.begin(), channels.end(),

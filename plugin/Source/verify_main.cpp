@@ -650,6 +650,52 @@ int main()
         check (near (g[0], 0.0, 1e-9), "digital silence: no signal, so no share taken and unity gain", g[0], 0.0);
     }
 
+    std::printf ("\nStereo\n");
+    {
+        // Left only, 0.5 amplitude square wave: left about -6 dB, right silent, combined 3 dB below left.
+        std::vector<float> left (480), right (480, 0.0f);
+        for (size_t i = 0; i < left.size(); ++i)
+            left[i] = (i / 24) % 2 == 0 ? 0.5f : -0.5f;
+        const float* ch[2] = { left.data(), right.data() };
+        const auto stereo = sgtm::measureLevels (ch, 2, 480);
+        check (near (stereo.channelDb[0], -6.02, 0.01) && stereo.channelDb[1] <= -119.0f,
+               "stereo meters: left and right measured separately", stereo.channelDb[0], -6.02);
+        check (near (stereo.combinedDb, -9.03, 0.01), "combined level is the mean power of both sides",
+               stereo.combinedDb, -9.03);
+        const auto mono = sgtm::measureLevels (ch, 1, 480);
+        check (near (mono.channelDb[0], -6.02, 0.01) && near (mono.combinedDb, -6.02, 0.01), "mono: one level");
+    }
+    {
+        // One linked gain for both sides, from the mean power of both: a stereo channel with
+        // signal on the left only gets the same gain as a mono channel carrying that mean power,
+        // and both sides are turned down alike, so the image does not shift.
+        struct OnePeer final : sgtm::PeerLevels
+        {
+            double power = std::pow (10.0, -23.0 / 10.0);
+            void publish (int64_t, double) noexcept override {}
+            double sumOfPeerPowers (int64_t) noexcept override { return power; }
+        } peer;
+
+        sgtm::AutomixChannel stereoChannel, monoChannel;
+        stereoChannel.prepare (48000.0);
+        monoChannel.prepare (48000.0);
+        auto l = noise (48000, -20.0, 5u);
+        std::vector<float> r (48000, 0.0f);
+        std::vector<float> m (l.size());
+        for (size_t i = 0; i < l.size(); ++i)
+            m[i] = l[i] * (float) std::sqrt (0.5); // same mean power as the stereo pair
+        for (int pos = 0; pos + 64 <= 48000; pos += 64)
+        {
+            float* p[2] = { l.data() + pos, r.data() + pos };
+            stereoChannel.process (p, 2, 64, pos, &peer);
+            float* q = m.data() + pos;
+            monoChannel.process (&q, 1, 64, pos, &peer);
+        }
+        const double gs = sgtm::gainToDb (stereoChannel.getCurrentGain());
+        const double gm = sgtm::gainToDb (monoChannel.getCurrentGain());
+        check (near (gs, gm, 0.05), "stereo detection is linked: left-only stereo shares like mono at its mean power", gs, gm);
+    }
+
     std::printf ("\nSolo pass-through and determinism\n");
     {
         const int total = 10000;

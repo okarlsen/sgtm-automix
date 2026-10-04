@@ -48,7 +48,10 @@ compressor (compression flattens the level differences it relies on).
   channel at once, for A/B comparison. Switching it on any instance switches
   them all. It is not saved with a session, and turns itself back on when a
   new session starts.
-- Meters: **IN** input level, **GAIN** the automix gain, **OUT** output level.
+- Meters: **IN** input level and **OUT** output level (left and right on a
+  stereo track), **GAIN** the gain the channel lets through. One gain applies
+  to both sides of a stereo track, set from the level of both sides together,
+  so the stereo image does not shift.
 - The channel list shows every running channel, sorted by group: its group,
   name, input level, gain (full at 0 dB, empty at −15 dB) and weight, with
   this instance highlighted. Click the name

@@ -51,6 +51,9 @@ public:
         std::atomic<float> inputDb { -120.0f };
         std::atomic<float> automixGainDb { 0.0f };
         std::atomic<float> outputDb { -120.0f };
+        std::atomic<float> inputLeftDb { -120.0f }, inputRightDb { -120.0f };
+        std::atomic<float> outputLeftDb { -120.0f }, outputRightDb { -120.0f };
+        std::atomic<int> numChannels { 2 };
         std::atomic<int> numPeers { 0 };
     };
     const Meters& getMeters() const noexcept { return meters; }
