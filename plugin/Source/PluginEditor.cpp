@@ -43,11 +43,98 @@ void LevelMeter::paint (juce::Graphics& g)
 }
 
 //==================================================================================================
+void ChannelList::setChannels (std::vector<LinkedChannelInfo> newChannels)
+{
+    auto same = [] (const LinkedChannelInfo& a, const LinkedChannelInfo& b)
+    {
+        // Compare at display resolution so an idle list does not repaint.
+        auto q = [] (float db) { return (int) std::lround (db * 2.0f); };
+        return a.slot == b.slot && a.isSelf == b.isSelf && a.label == b.label && q (a.inputDb) == q (b.inputDb)
+               && q (a.gainDb) == q (b.gainDb) && q (a.weightDb) == q (b.weightDb) && a.bypassed == b.bypassed;
+    };
+
+    if (newChannels.size() == channels.size()
+        && std::equal (newChannels.begin(), newChannels.end(), channels.begin(), same))
+        return;
+
+    channels = std::move (newChannels);
+    setSize (getWidth(), headerHeight + std::max (1, (int) channels.size()) * rowHeight);
+    repaint();
+}
+
+void ChannelList::paint (juce::Graphics& g)
+{
+    auto drawBar = [&g] (juce::Rectangle<float> r, float proportion, juce::Colour colour)
+    {
+        g.setColour (juce::Colour (0xff202124));
+        g.fillRoundedRectangle (r, 2.0f);
+        g.setColour (colour);
+        g.fillRoundedRectangle (r.withWidth (r.getWidth() * juce::jlimit (0.0f, 1.0f, proportion)), 2.0f);
+    };
+
+    // Column headings, laid out like the rows below.
+    {
+        auto row = juce::Rectangle<int> (0, 0, getWidth(), headerHeight).reduced (6, 0);
+        g.setColour (juce::Colours::grey);
+        g.setFont (11.0f);
+        g.drawText ("Channel", row.removeFromLeft (120), juce::Justification::centredLeft);
+        g.drawText ("Weight", row.removeFromRight (64), juce::Justification::centredRight);
+        g.drawText ("Gain dB", row.removeFromRight (56), juce::Justification::centredRight);
+        row.removeFromRight (6);
+        g.drawText ("Input", row.removeFromLeft (row.getWidth() / 2), juce::Justification::centredLeft);
+        g.drawText ("Automix gain", row.withTrimmedLeft (4), juce::Justification::centredLeft);
+    }
+
+    if (channels.empty())
+    {
+        g.setColour (juce::Colours::grey);
+        g.setFont (12.0f);
+        g.drawText ("No channels running", getLocalBounds().withTrimmedTop (headerHeight), juce::Justification::centred);
+        return;
+    }
+
+    int y = headerHeight;
+    for (const auto& c : channels)
+    {
+        auto row = juce::Rectangle<int> (0, y, getWidth(), rowHeight).reduced (0, 2);
+        y += rowHeight;
+
+        if (c.isSelf)
+        {
+            g.setColour (juce::Colour (0xff3d4048));
+            g.fillRoundedRectangle (row.toFloat(), 3.0f);
+        }
+
+        row.reduce (6, 0);
+        g.setColour (c.isSelf ? juce::Colours::white : juce::Colours::lightgrey);
+        g.setFont (juce::FontOptions (12.0f, c.isSelf ? juce::Font::bold : juce::Font::plain));
+        g.drawText (c.label, row.removeFromLeft (120), juce::Justification::centredLeft, true);
+
+        auto weightArea = row.removeFromRight (64);
+        g.setColour (c.bypassed ? juce::Colour (0xffef5350) : juce::Colours::grey);
+        g.drawText (c.bypassed ? juce::String ("BYPASS") : juce::String (c.weightDb, 1) + " dB", weightArea,
+                    juce::Justification::centredRight);
+
+        auto gainText = row.removeFromRight (56);
+        g.setColour (juce::Colour (0xffffb300));
+        g.drawText (juce::String (c.gainDb > -0.05f ? 0.0f : c.gainDb, 1), gainText,
+                    juce::Justification::centredRight);
+
+        row.removeFromRight (6);
+        const auto bars = row.toFloat().reduced (0, 4);
+        const auto half = bars.getWidth() / 2.0f - 2.0f;
+        drawBar (bars.withWidth (half), (c.inputDb + 60.0f) / 60.0f, juce::Colour (0xff4caf50));
+        drawBar (bars.withTrimmedLeft (half + 4.0f), (c.gainDb + 40.0f) / 40.0f, juce::Colour (0xffffb300));
+    }
+}
+
+//==================================================================================================
 AutomixEditor::AutomixEditor (AutomixProcessor& p)
     : AudioProcessorEditor (p),
       processor (p),
       weightAttachment (p.getParameters(), AutomixProcessor::weightId, weightSlider),
-      outputGainAttachment (p.getParameters(), AutomixProcessor::outputGainId, outputGainSlider)
+      outputGainAttachment (p.getParameters(), AutomixProcessor::outputGainId, outputGainSlider),
+      bypassAttachment (p.getParameters(), AutomixProcessor::bypassId, bypassButton)
 {
     logoImage = juce::ImageCache::getFromMemory (Assets::sgtm_logo_png, Assets::sgtm_logo_pngSize);
 
@@ -69,7 +156,36 @@ AutomixEditor::AutomixEditor (AutomixProcessor& p)
     setUpKnob (weightSlider, weightLabel, "Weight");
     setUpKnob (outputGainSlider, outputGainLabel, "Output");
 
-    setSize (380, 240);
+    // This channel's name, shown on every linked instance. Empty = the host's track name.
+    nameEditor.setEditable (true);
+    nameEditor.setText (p.getDisplayedLabel(), juce::dontSendNotification);
+    nameEditor.setTooltip ("Channel name (click to edit)");
+    nameEditor.setColour (juce::Label::backgroundColourId, juce::Colour (0xff202124));
+    nameEditor.setColour (juce::Label::textColourId, juce::Colours::white);
+    nameEditor.onTextChange = [this]
+    {
+        processor.setChannelName (nameEditor.getText());
+        nameEditor.setText (processor.getDisplayedLabel(), juce::dontSendNotification);
+    };
+    addAndMakeVisible (nameEditor);
+
+    bypassButton.setTooltip ("This channel at unity gain, out of the gain sharing");
+    addAndMakeVisible (bypassButton);
+
+    allOnButton.setTooltip ("Turns the automix on or off on every linked channel at once, for A/B comparison");
+    allOnButton.setToggleState (p.isAutomixOnForAll(), juce::dontSendNotification);
+    allOnButton.onClick = [this] { processor.setAutomixOnForAll (allOnButton.getToggleState()); };
+    addAndMakeVisible (allOnButton);
+
+    linkStatus.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    linkStatus.setFont (juce::FontOptions (12.0f));
+    addAndMakeVisible (linkStatus);
+
+    channelViewport.setViewedComponent (&channelList, false);
+    channelViewport.setScrollBarsShown (true, false);
+    addAndMakeVisible (channelViewport);
+
+    setSize (460, 450);
     startTimerHz (30);
 }
 
@@ -105,6 +221,20 @@ void AutomixEditor::resized()
     auto area = getLocalBounds().reduced (12);
     area.removeFromTop (28);
 
+    auto listArea = area.removeFromBottom (200);
+    auto switchRow = listArea.removeFromTop (26);
+    bypassButton.setBounds (switchRow.removeFromLeft (110));
+    allOnButton.setBounds (switchRow);
+    auto statusRow = listArea.removeFromTop (24);
+    nameEditor.setBounds (statusRow.removeFromLeft (150).reduced (0, 2));
+    statusRow.removeFromLeft (8);
+    linkStatus.setBounds (statusRow);
+    listArea.removeFromTop (4);
+    channelViewport.setBounds (listArea);
+    channelList.setSize (listArea.getWidth() - channelViewport.getScrollBarThickness(),
+                         channelList.getHeight());
+    area.removeFromBottom (8);
+
     auto meters = area.removeFromLeft (150);
     const int meterWidth = meters.getWidth() / 3;
     inputMeter.setBounds (meters.removeFromLeft (meterWidth));
@@ -128,6 +258,27 @@ void AutomixEditor::timerCallback()
     inputMeter.setLevelDb (m.inputDb.load (std::memory_order_relaxed));
     gainMeter.setLevelDb (m.automixGainDb.load (std::memory_order_relaxed));
     outputMeter.setLevelDb (m.outputDb.load (std::memory_order_relaxed));
+
+    juce::String status;
+    if (! processor.isLinkAvailable())
+        status = "Link unavailable: running solo";
+    else
+    {
+        const int peers = m.numPeers.load (std::memory_order_relaxed);
+        status = peers == 0 ? "Solo: no other channels found"
+                            : "Linked with " + juce::String (peers) + " other channel" + (peers == 1 ? "" : "s");
+    }
+    if (! processor.isAutomixOnForAll())
+        status = "Automix OFF on all channels";
+    if (allOnButton.getToggleState() != processor.isAutomixOnForAll())
+        allOnButton.setToggleState (processor.isAutomixOnForAll(), juce::dontSendNotification);
+    if (linkStatus.getText() != status)
+        linkStatus.setText (status, juce::dontSendNotification);
+
+    if (! nameEditor.isBeingEdited() && nameEditor.getText() != processor.getDisplayedLabel())
+        nameEditor.setText (processor.getDisplayedLabel(), juce::dontSendNotification);
+
+    channelList.setChannels (processor.getLinkedChannels());
 }
 
 } // namespace sgtm

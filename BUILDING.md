@@ -88,10 +88,16 @@ Two test programs, both built by default:
   on known cases (4 equal mics at −6 dB each, one mic 20 dB
   louder at about 0 dB with the others at about −20 dB, two loud mics at
   −3 dB, weight, silence), bit-exact pass-through when solo, and identical
-  output for any block size.
+  output for any block size. It also runs several channels through the
+  instance link: live groups, an offline bounce on 4 threads with random
+  block sizes that must match an exact reference bit for bit (twice), tracks
+  rendered serially on one thread without stalling, bypass, the
+  all-channels switch, peers dropping out, and a crashed peer process.
 - **SGTMAutomixSmokeTest** loads the built VST3s the way a host does and
   checks 0 samples latency, pass-through, the Output Gain parameter, state
-  save/restore, the editor, and that the probe logs every block.
+  save/restore, the editor, two linked instances sharing gain and Bypass,
+  and that the probe logs every block. It links its instances under a
+  private name, so a host running at the same time is not disturbed.
 
 Both must end with `ALL TESTS PASS`.
 

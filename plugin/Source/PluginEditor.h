@@ -21,6 +21,21 @@ private:
     float displayDb;
 };
 
+// Every linked channel, one row each: name, input level, automix gain and weight. This
+// instance's row is highlighted. Reads the shared block on the message thread only.
+class ChannelList final : public juce::Component
+{
+public:
+    static constexpr int rowHeight = 24;
+    static constexpr int headerHeight = 18;
+
+    void setChannels (std::vector<LinkedChannelInfo> newChannels);
+    void paint (juce::Graphics&) override;
+
+private:
+    std::vector<LinkedChannelInfo> channels;
+};
+
 class AutomixEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -45,6 +60,15 @@ private:
     juce::Slider weightSlider, outputGainSlider;
     juce::Label weightLabel, outputGainLabel;
     SliderAttachment weightAttachment, outputGainAttachment;
+
+    juce::ToggleButton bypassButton { "Bypass" };
+    juce::AudioProcessorValueTreeState::ButtonAttachment bypassAttachment;
+    juce::ToggleButton allOnButton { "Automix on (all channels)" };
+
+    juce::Label nameEditor;
+    juce::Label linkStatus;
+    ChannelList channelList;
+    juce::Viewport channelViewport;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AutomixEditor)
 };

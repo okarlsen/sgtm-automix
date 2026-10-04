@@ -26,10 +26,27 @@ AutomixProcessor::AutomixProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      parameters (*this, nullptr, "SGTMAutomix", createParameterLayout())
+      parameters (*this, nullptr, "SGTMAutomix", createParameterLayout()),
+      link (linkName())
 {
     weightDb = parameters.getRawParameterValue (weightId);
     outputGainDb = parameters.getRawParameterValue (outputGainId);
+    bypass = parameters.getRawParameterValue (bypassId);
+    link.join();
+}
+
+AutomixProcessor::~AutomixProcessor()
+{
+    cancelPendingUpdate();
+    link.leave();
+}
+
+// SGTM_AUTOMIX_LINK_NAME overrides the shared block, so tests never join a running session.
+std::string AutomixProcessor::linkName()
+{
+    if (const char* name = std::getenv ("SGTM_AUTOMIX_LINK_NAME"))
+        return name;
+    return InstanceLink::defaultName();
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout AutomixProcessor::createParameterLayout()
@@ -43,7 +60,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout AutomixProcessor::createPara
         std::make_unique<juce::AudioParameterFloat> (
             juce::ParameterID { outputGainId, 1 }, "Output Gain",
             juce::NormalisableRange<float> (-24.0f, 12.0f, 0.1f), 0.0f, dbAttributes),
+        std::make_unique<juce::AudioParameterBool> (juce::ParameterID { bypassId, 1 }, "Bypass", false),
     };
+}
+
+juce::AudioProcessorParameter* AutomixProcessor::getBypassParameter() const
+{
+    return parameters.getParameter (bypassId);
 }
 
 bool AutomixProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -60,9 +83,12 @@ void AutomixProcessor::prepareToPlay (double sampleRate, int)
     setLatencySamples (0);
     engine.prepare (sampleRate);
     engine.setWeightDb (weightDb->load());
+    engine.setBypassed (bypass->load() >= 0.5f || ! link.isAutomixOn(), true);
     outputGain.reset (sampleRate, 0.02);
     outputGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (outputGainDb->load()));
     samplePosition = 0;
+    link.join();
+    publishLabel();
 }
 
 void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -75,12 +101,29 @@ void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
     for (int ch = getTotalNumInputChannels(); ch < numChannels; ++ch)
         buffer.clear (ch, 0, numSamples);
 
-    meters.inputDb.store (blockRmsDb (buffer, numChannels, numSamples), std::memory_order_relaxed);
+    const float inputDb = blockRmsDb (buffer, numChannels, numSamples);
+    meters.inputDb.store (inputDb, std::memory_order_relaxed);
 
-    engine.setWeightDb (weightDb->load());
-    engine.process (buffer.getArrayOfWritePointers(), numChannels, numSamples, samplePosition,
-                    /* peers: instance link arrives in thread 3 */ nullptr);
-    samplePosition += numSamples;
+    // Offline, take the block's position from the host timeline so every instance agrees on hop
+    // numbers. Live, keep counting: peers are matched by their newest value.
+    const bool offline = isNonRealtime();
+    int64_t startSample = samplePosition;
+    if (offline)
+        if (auto* playHead = getPlayHead())
+            if (auto position = playHead->getPosition())
+                if (auto time = position->getTimeInSamples())
+                    startSample = *time;
+
+    link.beginBlock (InstanceLink::steadyNowNs(), offline, startSample, numSamples);
+    meters.numPeers.store (link.getNumPeers(), std::memory_order_relaxed);
+
+    const float weight = weightDb->load();
+    const bool channelBypassed = bypass->load() >= 0.5f;
+    engine.setWeightDb (weight);
+    engine.setBypassed (channelBypassed || ! link.isAutomixOn());
+    engine.process (buffer.getArrayOfWritePointers(), numChannels, numSamples, startSample,
+                    link.isJoined() ? &link : nullptr);
+    samplePosition = startSample + numSamples;
 
     outputGain.setTargetValue (juce::Decibels::decibelsToGain (outputGainDb->load()));
     if (outputGain.isSmoothing())
@@ -97,14 +140,18 @@ void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
         buffer.applyGain (outputGain.getTargetValue());
     }
 
-    meters.automixGainDb.store (static_cast<float> (gainToDb (engine.getCurrentGain())),
-                                std::memory_order_relaxed);
-    meters.outputDb.store (blockRmsDb (buffer, numChannels, numSamples), std::memory_order_relaxed);
+    const auto automixDb = static_cast<float> (gainToDb (engine.getCurrentGain()));
+    const float outputDb = blockRmsDb (buffer, numChannels, numSamples);
+    meters.automixGainDb.store (automixDb, std::memory_order_relaxed);
+    meters.outputDb.store (outputDb, std::memory_order_relaxed);
+    link.setDisplay (inputDb, automixDb, outputDb, weight, channelBypassed);
 }
 
 void AutomixProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    if (auto xml = parameters.copyState().createXml())
+    auto state = parameters.copyState();
+    state.setProperty ("channelName", userLabel, nullptr);
+    if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
 
@@ -112,8 +159,42 @@ void AutomixProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (parameters.state.getType()))
-            parameters.replaceState (juce::ValueTree::fromXml (*xml));
+        {
+            auto state = juce::ValueTree::fromXml (*xml);
+            userLabel = state.getProperty ("channelName").toString();
+            state.removeProperty ("channelName", nullptr);
+            parameters.replaceState (state);
+            triggerAsyncUpdate();
+        }
 }
+
+// Hosts may call this from any thread; the link is updated on the message thread.
+void AutomixProcessor::updateTrackProperties (const TrackProperties& properties)
+{
+    {
+        const juce::ScopedLock lock (trackNameLock);
+        trackName = properties.name.value_or (juce::String());
+    }
+    triggerAsyncUpdate();
+}
+
+void AutomixProcessor::setChannelName (const juce::String& name)
+{
+    userLabel = name.trim();
+    publishLabel();
+}
+
+juce::String AutomixProcessor::getDisplayedLabel() const
+{
+    if (userLabel.isNotEmpty())
+        return userLabel;
+    const juce::ScopedLock lock (trackNameLock);
+    return trackName;
+}
+
+void AutomixProcessor::handleAsyncUpdate() { publishLabel(); }
+
+void AutomixProcessor::publishLabel() { link.setLabel (getDisplayedLabel().toStdString()); }
 
 juce::AudioProcessorEditor* AutomixProcessor::createEditor()
 {

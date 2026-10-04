@@ -5,6 +5,15 @@ All notable changes to SGTM Automix are documented here. Versions follow
 
 ## [Unreleased]
 
+- Instance link: every SGTM Automix instance on the computer finds the
+  others through shared memory and shares gain with them, also across host
+  processes. Live, the audio thread never waits; offline bounces match
+  sample positions exactly.
+- Channel list in the editor: every running channel with its name, input
+  level, automix gain and weight. Channels can be named.
+- Bypass per channel (also the host's bypass) and an all-channels automix
+  on/off switch for A/B comparison.
+
 ## [0.1.0] — development skeleton (not released)
 
 - JUCE 9.0.3 project building AU, VST3 and AAX (AAX unsigned, so it loads

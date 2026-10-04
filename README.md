@@ -14,9 +14,8 @@ Built by SGTM on top of [JUCE](https://juce.com).
 
 ## Status
 
-Early development (0.1.0). The plugin builds and passes audio, and the
-automix engine is in place, but instances do not see each other yet, so each
-one runs solo at 0 dB automix gain. Not released.
+Early development (0.1.0). Instances on the same computer find each other
+and share gain, live and in offline bounces. Not released.
 
 ## Requirements
 
@@ -33,7 +32,22 @@ compressor (compression flattens the level differences it relies on).
   to the automixer, not its audio level. Balance the weights so all GAIN
   meters read about the same when nobody is talking.
 - **Output** is a plain output trim.
+- **Bypass** puts the channel at unity gain and takes it out of the gain
+  sharing, so the other channels share as if it were not there. It fades
+  over 20 ms and follows the host's own bypass button.
+- **Automix on (all channels)** switches the automix off or on for every
+  channel at once, for A/B comparison. Switching it on any instance switches
+  them all. It is not saved with a session, and turns itself back on when a
+  new session starts.
 - Meters: **IN** input level, **GAIN** the automix gain, **OUT** output level.
+- The channel list shows every running channel: its name, input level,
+  automix gain and weight, with this instance highlighted. Click the name
+  field to name the channel; left empty, it uses the host's track name where
+  the host provides one.
+
+All instances on the computer link up, in any host and any number of host
+processes (up to 64 channels). Run one host session at a time while using
+it: two hosts open at once would link with each other.
 
 ## Building from source
 
@@ -43,8 +57,11 @@ See [BUILDING.md](BUILDING.md).
 
 - VST3 builds on Linux; the engine tests, the VST3 smoke test and pluginval
   (strictness 10) pass there.
-- Not yet verified: the macOS build (universal binary), AU validation, AAX
-  in Pro Tools Developer, and the signing and packaging scripts.
+- macOS universal build: the engine and instance-link tests, the VST3
+  smoke test and AU validation (`auval`) pass.
+- Not yet verified: the instance link in real hosts (live and offline
+  bounces), AAX in Pro Tools Developer, and the signing and packaging
+  scripts.
 
 ## License
 

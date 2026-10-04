@@ -35,14 +35,17 @@ struct EngineSettings
     double attackMs = 5.0;
     double releaseMs = 200.0;
 
+    // Bypass fades the channel to unity gain, and its share out of the group, over this time.
+    double bypassFadeMs = 20.0;
+
     // Added to every channel's power so digital silence still shares gain equally
     // (N silent channels each get -10*log10(N) dB). -100 dBFS.
     double powerFloor = 1.0e-10;
 };
 
 //==================================================================================================
-// Where peer levels come from. Thread 3 implements this with the shared-memory link; until then
-// a channel runs solo (no peers), which makes its automix gain exactly 1.
+// Where peer levels come from: InstanceLink (InstanceLink.h) in the plugin, fakes in the tests.
+// Without peers a channel runs solo, which makes its automix gain exactly 1.
 class PeerLevels
 {
 public:
@@ -80,6 +83,7 @@ public:
         const double hopsPerSecond = sampleRate / EngineSettings::hopSize;
         attackCoeff = std::exp (-1000.0 / (settings.attackMs * hopsPerSecond));
         releaseCoeff = std::exp (-1000.0 / (settings.releaseMs * hopsPerSecond));
+        bypassStep = std::min (1.0, 1000.0 / (settings.bypassFadeMs * hopsPerSecond));
         reset();
     }
 
@@ -92,6 +96,16 @@ public:
         currentGain = targetGain = 1.0;
         gainStep = 0.0;
         lastInputPower = 0.0;
+        bypassMix = bypassTarget;
+    }
+
+    // Bypassed: unity gain, and nothing contributed to the group's sum, so the other channels
+    // share as if this one were not there. Changes fade over bypassFadeMs unless immediate.
+    void setBypassed (bool shouldBypass, bool immediate = false) noexcept
+    {
+        bypassTarget = shouldBypass ? 1.0 : 0.0;
+        if (immediate)
+            bypassMix = bypassTarget;
     }
 
     // Weight scales the detector input only, never the audio (sets priority between channels).
@@ -144,6 +158,7 @@ public:
     double getSmoothedPower() const noexcept { return smoothedPower; }
     double getLastInputPower() const noexcept { return lastInputPower; }
     double getCurrentGain() const noexcept { return currentGain; }
+    bool isBypassed() const noexcept { return bypassTarget > 0.5; }
 
 private:
     void endHop (int64_t hopIndex, PeerLevels* peers) noexcept
@@ -157,14 +172,19 @@ private:
         const double coeff = logIn > logState ? attackCoeff : releaseCoeff;
         smoothedPower = std::exp (logIn + coeff * (logState - logIn));
 
+        if (bypassMix < bypassTarget)
+            bypassMix = std::min (bypassTarget, bypassMix + bypassStep);
+        else if (bypassMix > bypassTarget)
+            bypassMix = std::max (bypassTarget, bypassMix - bypassStep);
+
         double peerSum = 0.0;
         if (peers != nullptr)
         {
-            peers->publish (hopIndex, smoothedPower);
+            peers->publish (hopIndex, smoothedPower * (1.0 - bypassMix));
             peerSum = peers->sumOfPeerPowers (hopIndex);
         }
 
-        targetGain = automixGain (smoothedPower, peerSum);
+        targetGain = bypassMix + (1.0 - bypassMix) * automixGain (smoothedPower, peerSum);
         gainStep = (targetGain - currentGain) / EngineSettings::hopSize;
 
         hopAccumulator = 0.0;
@@ -193,6 +213,7 @@ private:
     double smoothedPower = 1.0e-10;
     double lastInputPower = 0.0;
     double currentGain = 1.0, targetGain = 1.0, gainStep = 0.0;
+    double bypassTarget = 0.0, bypassMix = 0.0, bypassStep = 1.0;
 };
 
 } // namespace sgtm

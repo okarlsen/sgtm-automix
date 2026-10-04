@@ -1,8 +1,14 @@
 // Unit tests for the automix engine. No framework: prints each check and exits non-zero on failure.
 
 #include "AutomixEngine.h"
+#include "InstanceLink.h"
 
+#include <chrono>
 #include <cstdio>
+#include <memory>
+#include <string>
+#include <thread>
+#include <sys/wait.h>
 #include <map>
 #include <random>
 #include <vector>
@@ -23,7 +29,7 @@ void check (bool ok, const char* what, double got = 0.0, double want = 0.0)
 
 bool near (double a, double b, double tol) { return std::abs (a - b) <= tol; }
 
-// In-memory stand-in for the thread-3 instance link. Channels are processed one after another, so
+// In-memory stand-in for the instance link. Channels are processed one after another, so
 // when a peer has not published a hop yet the newest value it did publish is used (the live rule).
 struct FakeLink
 {
@@ -56,6 +62,13 @@ struct FakeLink
             return sum;
         }
     };
+};
+
+struct LinkTestName
+{
+    std::string name = "/sgtm-am-test-" + std::to_string ((long) getpid());
+    LinkTestName() { sgtm::InstanceLink::unlinkShared (name); }
+    ~LinkTestName() { sgtm::InstanceLink::unlinkShared (name); }
 };
 
 std::vector<float> noise (int n, double rmsDb, unsigned seed)
@@ -103,6 +116,354 @@ std::vector<double> runGroup (const std::vector<double>& levelsDb, const std::ve
     for (auto& c : chans)
         gains.push_back (sgtm::gainToDb (c.getCurrentGain()));
     return gains;
+}
+
+//==================================================================================================
+// Instance link tests.
+
+constexpr double linkRate = 48000.0;
+constexpr int64_t nsPerSample = 1'000'000'000 / 48000;
+
+struct LinkedChannel
+{
+    std::unique_ptr<sgtm::InstanceLink> link;
+    sgtm::AutomixChannel engine;
+    std::vector<float> audio;
+};
+
+std::vector<LinkedChannel> makeLinkedChannels (const std::string& name, const std::vector<double>& levelsDb,
+                                              int total, const std::vector<double>& weightsDb = {})
+{
+    std::vector<LinkedChannel> chans (levelsDb.size());
+    for (size_t i = 0; i < chans.size(); ++i)
+    {
+        chans[i].link = std::make_unique<sgtm::InstanceLink> (name);
+        chans[i].link->join();
+        chans[i].engine.prepare (linkRate);
+        chans[i].engine.setWeightDb (weightsDb.empty() ? 0.0 : weightsDb[i]);
+        chans[i].audio = noise (total, levelsDb[i], 1234u + (unsigned) i);
+    }
+    return chans;
+}
+
+void processBlock (LinkedChannel& c, int64_t start, int n, bool offline, int64_t nowNs, int64_t offset = 0)
+{
+    float* p = c.audio.data() + (start - offset);
+    c.link->beginBlock (nowNs, offline, start, n);
+    c.engine.process (&p, 1, n, start, c.link.get());
+}
+
+// Live: channels take turns block by block in one thread, like a host's audio callback.
+std::vector<double> runLiveGroup (const std::string& name, const std::vector<double>& levelsDb,
+                                  const std::vector<double>& weightsDb = {}, int block = 64)
+{
+    const int total = 48000;
+    auto chans = makeLinkedChannels (name, levelsDb, total, weightsDb);
+    for (int pos = 0; pos + block <= total; pos += block)
+        for (auto& c : chans)
+            processBlock (c, pos, block, false, 1'000'000'000 + pos * nsPerSample);
+
+    std::vector<double> gains;
+    for (auto& c : chans)
+        gains.push_back (sgtm::gainToDb (c.engine.getCurrentGain()));
+    return gains;
+}
+
+// Exact reference for offline rendering: every channel sees every peer's power for the same hop.
+// A channel's smoothed power depends only on its own input, so record it solo first.
+struct OracleLink final : sgtm::PeerLevels
+{
+    const std::vector<std::vector<double>>* powers = nullptr;
+    size_t self = 0;
+    int64_t firstHop = 0;
+    void publish (int64_t, double) noexcept override {}
+    double sumOfPeerPowers (int64_t hop) noexcept override
+    {
+        double sum = 0.0;
+        for (size_t i = 0; i < powers->size(); ++i)
+            if (i != self)
+                sum += (*powers)[i][(size_t) (hop - firstHop)];
+        return sum;
+    }
+};
+
+std::vector<std::vector<float>> referenceRender (const std::vector<double>& levelsDb, int total, int64_t offset)
+{
+    const size_t n = levelsDb.size();
+    std::vector<std::vector<double>> powers (n);
+    std::vector<std::vector<float>> out (n);
+    const int64_t firstHop = offset / sgtm::EngineSettings::hopSize;
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        struct Recorder final : sgtm::PeerLevels
+        {
+            std::vector<double>* v = nullptr;
+            void publish (int64_t, double p) noexcept override { v->push_back (p); }
+            double sumOfPeerPowers (int64_t) noexcept override { return 0.0; }
+        } rec;
+        rec.v = &powers[i];
+        sgtm::AutomixChannel c;
+        c.prepare (linkRate);
+        auto a = noise (total, levelsDb[i], 1234u + (unsigned) i);
+        float* p = a.data();
+        c.process (&p, 1, total, offset, &rec);
+    }
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        OracleLink oracle;
+        oracle.powers = &powers;
+        oracle.self = i;
+        oracle.firstHop = firstHop;
+        sgtm::AutomixChannel c;
+        c.prepare (linkRate);
+        out[i] = noise (total, levelsDb[i], 1234u + (unsigned) i);
+        float* p = out[i].data();
+        c.process (&p, 1, total, offset, &oracle);
+    }
+    return out;
+}
+
+double maxDiff (const std::vector<float>& a, const std::vector<float>& b)
+{
+    double d = 0.0;
+    for (size_t i = 0; i < a.size(); ++i)
+        d = std::max (d, (double) std::abs (a[i] - b[i]));
+    return d;
+}
+
+// Offline bounce: each channel renders on its own thread with its own block sizes and jitter,
+// starting at a timeline position that is not on the hop grid.
+void runOfflineThreads (std::vector<LinkedChannel>& chans, int total, int64_t offset, unsigned seed)
+{
+    std::vector<std::thread> threads;
+    for (size_t i = 0; i < chans.size(); ++i)
+        threads.emplace_back ([&, i]
+        {
+            std::mt19937 rng (seed + (unsigned) i);
+            std::uniform_int_distribution<int> blockDist (1, 1500);
+            std::uniform_int_distribution<int> jitter (0, 9);
+            int64_t pos = offset;
+            while (pos < offset + total)
+            {
+                const int n = (int) std::min<int64_t> (blockDist (rng), offset + total - pos);
+                processBlock (chans[i], pos, n, true, sgtm::InstanceLink::steadyNowNs(), offset);
+                pos += n;
+                if (jitter (rng) == 0)
+                    std::this_thread::sleep_for (std::chrono::microseconds (200));
+            }
+        });
+    for (auto& t : threads)
+        t.join();
+}
+
+void linkTests()
+{
+    std::printf ("\nInstance link\n");
+
+    {
+        LinkTestName shm;
+        sgtm::InstanceLink link (shm.name);
+        check (link.isAvailable() && link.join(), "shared block opens and a slot is claimed");
+
+        sgtm::AutomixChannel c;
+        c.prepare (linkRate);
+        auto input = noise (20000, -20.0, 3u);
+        auto out = input;
+        for (int pos = 0; pos < 20000; pos += 100)
+        {
+            float* p = out.data() + pos;
+            link.beginBlock (1'000'000'000 + pos * nsPerSample, false, pos, 100);
+            c.process (&p, 1, 100, pos, &link);
+        }
+        check (out == input && link.getNumPeers() == 0, "lone linked instance is bit-exact pass-through");
+    }
+
+    {
+        LinkTestName shm;
+        auto g = runLiveGroup (shm.name, { -40, -40, -40, -40 });
+        for (int i = 0; i < 4; ++i)
+            check (near (g[(size_t) i], -6.02, 0.5), "live, 4 equal mics: each about -6 dB", g[(size_t) i], -6.02);
+    }
+    {
+        LinkTestName shm;
+        auto g = runLiveGroup (shm.name, { -20, -40, -40, -40 }, {}, 512);
+        check (near (g[0], -0.13, 0.5), "live, 1 mic 20 dB louder: about 0 dB (512 blocks)", g[0], -0.13);
+        check (near (g[1], -20.1, 1.0), "live, the others: about -20 dB", g[1], -20.1);
+    }
+    {
+        LinkTestName shm;
+        auto g = runLiveGroup (shm.name, { -40, -40 }, { 6.0, 0.0 });
+        check (near (g[0], -0.97, 0.5), "live, weight +6 dB raises that channel's share", g[0], -0.97);
+        check (near (g[1], -6.99, 0.5), "live, and lowers the other's", g[1], -6.99);
+    }
+
+    {
+        LinkTestName shm;
+        const std::vector<double> levels { -20, -30, -40, -26 };
+        const int total = 96000;
+        const int64_t offset = 4803; // not on the hop grid
+        auto reference = referenceRender (levels, total, offset);
+
+        auto chans = makeLinkedChannels (shm.name, levels, total);
+
+        // The host's engine has been running live before the bounce; then it resets the plugins.
+        for (int pos = 0; pos < 4800; pos += 480)
+            for (auto& c : chans)
+            {
+                auto scratch = noise (480, -30.0, 5u);
+                float* p = scratch.data();
+                c.link->beginBlock (sgtm::InstanceLink::steadyNowNs(), false, pos, 480);
+                c.engine.process (&p, 1, 480, pos, c.link.get());
+            }
+        for (auto& c : chans)
+            c.engine.prepare (linkRate);
+
+        runOfflineThreads (chans, total, offset, 99u);
+        double worst = 0.0;
+        int64_t timeouts = 0;
+        for (size_t i = 0; i < chans.size(); ++i)
+        {
+            worst = std::max (worst, maxDiff (chans[i].audio, reference[i]));
+            timeouts += chans[i].link->getWaitTimeouts();
+        }
+        check (worst == 0.0 && timeouts == 0,
+               "offline, 4 threads, random blocks and timing: identical to exact reference", worst, 0.0);
+
+        // Second bounce over the same range: must not pick up values from the first pass.
+        for (size_t i = 0; i < chans.size(); ++i)
+            chans[i].audio = noise (total, levels[i], 1234u + (unsigned) i);
+        for (auto& c : chans)
+            c.engine.prepare (linkRate);
+        runOfflineThreads (chans, total, offset, 7u);
+        worst = 0.0;
+        for (size_t i = 0; i < chans.size(); ++i)
+            worst = std::max (worst, maxDiff (chans[i].audio, reference[i]));
+        check (worst == 0.0, "offline, second bounce of the same range: identical again", worst, 0.0);
+    }
+
+    {
+        // A host that renders tracks one after another on a single thread: must not stall, and
+        // still converge (peers are then one block behind, like live).
+        LinkTestName shm;
+        const std::vector<double> levels { -40, -40, -40, -40 };
+        const int total = 480000; // 10 s
+        auto chans = makeLinkedChannels (shm.name, levels, total);
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int pos = 0; pos + 512 <= total; pos += 512)
+            for (auto& c : chans)
+                processBlock (c, pos, 512, true, sgtm::InstanceLink::steadyNowNs());
+        const double ms = std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now() - t0).count();
+        check (ms < 2000.0, "offline, tracks rendered serially on one thread: no stall (ms for 10 s x 4)", ms, 2000.0);
+        check (near (sgtm::gainToDb (chans[0].engine.getCurrentGain()), -6.02, 0.5),
+               "offline serial: gains still about -6 dB", sgtm::gainToDb (chans[0].engine.getCurrentGain()), -6.02);
+    }
+
+    {
+        // Bypass on one of two channels: it fades to unity and out of the group, so the other
+        // channel is alone and also goes to unity. No step larger than the fade allows.
+        LinkTestName shm;
+        auto chans = makeLinkedChannels (shm.name, { -30, -30 }, 96000);
+        double biggestStep = 0.0, previous = 1.0;
+        for (int pos = 0; pos + 64 <= 96000; pos += 64)
+        {
+            if (pos == 48000)
+                chans[0].engine.setBypassed (true);
+            for (auto& c : chans)
+                processBlock (c, pos, 64, false, 1'000'000'000 + pos * nsPerSample);
+            const double g = chans[0].engine.getCurrentGain();
+            if (pos > 48000)
+                biggestStep = std::max (biggestStep, std::abs (g - previous));
+            previous = g;
+        }
+        check (near (sgtm::gainToDb (chans[0].engine.getCurrentGain()), 0.0, 1e-6), "bypassed channel ends at unity",
+               sgtm::gainToDb (chans[0].engine.getCurrentGain()), 0.0);
+        check (near (sgtm::gainToDb (chans[1].engine.getCurrentGain()), 0.0, 0.1),
+               "the other channel is then alone: unity", sgtm::gainToDb (chans[1].engine.getCurrentGain()), 0.0);
+        check (biggestStep < 0.05, "bypass fades in (largest gain change per 64-sample block)", biggestStep, 0.05);
+    }
+
+    {
+        // The all-channels switch is shared, and a new session starts with the automix on.
+        LinkTestName shm;
+        sgtm::InstanceLink a (shm.name), b (shm.name);
+        a.join();
+        b.join();
+        a.setAutomixOn (false);
+        check (! b.isAutomixOn(), "switching the automix off on one instance switches it off on all");
+        a.leave();
+        b.leave();
+        sgtm::InstanceLink c (shm.name);
+        c.join();
+        check (c.isAutomixOn(), "a new session starts with the automix on");
+    }
+
+    {
+        // Peers that stop processing drop out after a second; a running peer's metadata is visible.
+        LinkTestName shm;
+        sgtm::InstanceLink a (shm.name), b (shm.name);
+        a.join();
+        b.join();
+        b.setLabel ("Pastor");
+        const int64_t t = 5'000'000'000;
+        b.beginBlock (t, false, 0, 64);
+        b.setDisplay (-30.0f, -3.0f, -33.0f, 2.0f);
+        a.beginBlock (t + 1000, false, 0, 64);
+        const auto list = a.getChannels (t + 1000);
+        const bool sawB = list.size() == 2 && list[1].label == "Pastor" && list[1].weightDb == 2.0f && ! list[1].isSelf;
+        check (a.getNumPeers() == 1 && sawB, "a running peer is counted and its name and levels are visible");
+        a.beginBlock (t + 1'500'000'000, false, 64, 64);
+        check (a.getNumPeers() == 0 && a.getChannels (t + 1'500'000'000).size() == 1,
+               "a peer that stops processing drops out after 1 s");
+        b.leave();
+        a.beginBlock (t + 1'500'001'000, false, 128, 64);
+        check (a.getNumPeers() == 0, "a peer that leaves is gone");
+    }
+
+    {
+        // Another process joins and publishes, then dies without leaving (a crash).
+        LinkTestName shm;
+        const pid_t child = fork();
+        if (child == 0)
+        {
+            sgtm::InstanceLink link (shm.name);
+            link.join();
+            link.setLabel ("Other process");
+            for (int i = 0; i < 400; ++i)
+            {
+                link.beginBlock (sgtm::InstanceLink::steadyNowNs(), false, i * 64, 64);
+                link.publish (i * 4, 0.01);
+                std::this_thread::sleep_for (std::chrono::milliseconds (1));
+            }
+            _exit (0); // no leave(): the slot stays claimed, as after a crash
+        }
+
+        sgtm::InstanceLink a (shm.name);
+        a.join();
+        std::this_thread::sleep_for (std::chrono::milliseconds (100));
+        a.beginBlock (sgtm::InstanceLink::steadyNowNs(), false, 0, 64);
+        const double peerPower = a.sumOfPeerPowers (0);
+        check (a.getNumPeers() == 1 && near (peerPower, 0.01, 1e-12), "a peer in another process is seen");
+        int status = 0;
+        waitpid (child, &status, 0);
+
+        std::this_thread::sleep_for (std::chrono::milliseconds (1100));
+        a.beginBlock (sgtm::InstanceLink::steadyNowNs(), false, 64, 64);
+        check (a.getNumPeers() == 0, "a crashed peer drops out");
+
+        std::this_thread::sleep_for (std::chrono::milliseconds (1000));
+        std::vector<std::unique_ptr<sgtm::InstanceLink>> more;
+        int joined = 0;
+        for (int i = 0; i < 63; ++i)
+        {
+            more.push_back (std::make_unique<sgtm::InstanceLink> (shm.name));
+            joined += more.back()->join() ? 1 : 0;
+        }
+        check (joined == 63, "the crashed process's slot is reclaimed (64 slots all usable)", joined, 63);
+        sgtm::InstanceLink extra (shm.name);
+        check (! extra.join(), "a 65th instance runs solo instead of failing");
+    }
 }
 } // namespace
 
@@ -171,6 +532,8 @@ int main()
         check (unity, "solo instance is bit-exact pass-through");
         check (identical, "output does not depend on block size");
     }
+
+    linkTests();
 
     std::printf ("\n%s (%d failure%s)\n", failures == 0 ? "ALL TESTS PASS" : "SOME TESTS FAILED", failures,
                  failures == 1 ? "" : "s");

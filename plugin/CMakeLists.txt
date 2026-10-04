@@ -149,10 +149,19 @@ if(SGTM_BUILD_PROBE)
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# Standalone harness that checks the automix engine directly (gain shares for
-# equal and unequal channels, pass-through, block-size independence). No JUCE.
+# Standalone harness that checks the automix engine and the instance link
+# directly (gain shares for equal and unequal channels, pass-through,
+# block-size independence, several linked instances live and offline). No JUCE.
 
 add_executable(SGTMAutomixVerify Source/verify_main.cpp)
+
+find_package(Threads REQUIRED)
+target_link_libraries(SGTMAutomixVerify PRIVATE Threads::Threads)
+if(UNIX AND NOT APPLE)
+    # shm_open lives in librt on older glibc.
+    target_link_libraries(SGTMAutomixVerify PRIVATE rt)
+    target_link_libraries(SGTMAutomix PRIVATE rt)
+endif()
 
 # Loads the built VST3 bundles the way a host does and checks latency,
 # pass-through, parameters, state, editor and probe logging.
