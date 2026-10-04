@@ -75,6 +75,12 @@ plugins and needs a free Avid developer account. Shipping AAX needs Avid's
 PACE signing tools (wraptool and an iLok signing certificate), requested
 from Avid.
 
+The AAX is set up for automixing, untested until it runs in Pro Tools:
+multi-mono is off (a stereo track gets one instance and one gain), AudioSuite
+is off (it processes a clip with no other channels to share with), and Pro
+Tools' dynamic plug-in processing is off (silent tracks keep running, so a
+bounce never waits on them). See `plugin/CMakeLists.txt`.
+
 ## Verifying a build
 
 Two test programs, both built by default:

@@ -34,9 +34,10 @@ automixer, and works best with one microphone per talker.
   to the automixer, not its audio level. Balance the weights so all GAIN
   meters read about the same when nobody is talking.
 - **Output** is a plain output trim.
-- **Bypass** puts the channel at unity gain and takes it out of the gain
-  sharing, so the other channels share as if it were not there. It fades
-  over 20 ms and follows the host's own bypass button.
+- **Bypass** passes the channel's audio through unchanged (Output trim
+  included) and takes it out of the gain sharing, so the other channels share
+  as if it were not there. It fades over 20 ms and follows the host's own
+  bypass button.
 - The automixer judges levels in the voice band only (150 Hz to 5 kHz), so
   stage rumble, handling noise and hiss don't take a share. The audio itself
   is not filtered.
@@ -62,6 +63,8 @@ automixer, and works best with one microphone per talker.
   this instance highlighted. Click the name
   field to name the channel; left empty, it uses the host's track name where
   the host provides one.
+- The window can be resized from its bottom-right corner; the channel list
+  takes the extra height.
 
 All instances on the computer link up, in any host and any number of host
 processes (up to 64 channels). Run one host session at a time while using
@@ -77,9 +80,10 @@ See [BUILDING.md](BUILDING.md).
   (strictness 10) pass there.
 - macOS universal build: the engine and instance-link tests, the VST3
   smoke test and AU validation (`auval`) pass.
-- Not yet verified: the instance link in real hosts (live and offline
-  bounces), AAX in Pro Tools Developer, and the signing and packaging
-  scripts.
+- Used live in Logic and LiveProfessor on macOS (AU), with linked
+  instances, groups and the channel list.
+- Not yet verified: offline bounces in real hosts, AAX in Pro Tools
+  Developer, and the signing and packaging scripts.
 
 ## License
 

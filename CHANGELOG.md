@@ -26,8 +26,11 @@ All notable changes to SGTM Automix are documented here. Versions follow
   band-pass on its copy; the audio is untouched), so rumble and hiss take no
   share and a channel with only rumble counts as no signal.
 - Detector attack 15 ms (was 5 ms) for a softer fade-up on word starts.
-- IN and OUT meters show left and right separately on stereo tracks, and the channel list
-  shows a left/right input pair for stereo channels.
+- IN and OUT meters show left and right separately on stereo tracks, and the
+  channel list shows a left/right input pair for stereo channels. Level
+  meters run from 0 to −80 dBFS.
+- Group selector coloured by group, matching the channel list.
+- Resizable window: the channel list takes the extra height.
 
 ## [0.1.0] — development skeleton (not released)
 
