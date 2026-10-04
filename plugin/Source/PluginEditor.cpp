@@ -415,7 +415,8 @@ void AutomixEditor::showHelpDialog()
         "\n"
         "\n"
         "=== THE CHANNEL LIST ===\n"
-        "Every SGTM Automix that is running, sorted by group, with this channel highlighted: "
+        "Every SGTM Automix that is running, sorted by group and then by name, with this "
+        "channel highlighted: "
         "its group, name, input level (left and right on a stereo track), the gain it lets "
         "through, and its weight. The status line counts the active channels in this "
         "channel's group.\n"
@@ -576,8 +577,7 @@ void AutomixEditor::timerCallback()
                              m.outputRightDb.load (std::memory_order_relaxed), stereo);
 
     auto channels = processor.getLinkedChannels();
-    std::stable_sort (channels.begin(), channels.end(),
-                      [] (const auto& a, const auto& b) { return a.group < b.group; });
+    std::sort (channels.begin(), channels.end(), channelListOrder);
     const int ownGroup = processor.getGroup();
     int idle = 0;
     bool selfIdle = false;

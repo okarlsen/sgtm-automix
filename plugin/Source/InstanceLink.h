@@ -31,6 +31,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -132,6 +133,51 @@ struct LinkedChannelInfo
     bool idle = false; // loaded but not processing (for example Logic with the transport stopped)
     int group = 0;     // 0 = A, 1 = B, 2 = C
 };
+
+//==================================================================================================
+// Display order for the channel list: by group, then by name (case-insensitive, numbers in
+// numeric order so "Audio 2" comes before "Audio 10"), then by slot so rows never swap while
+// their names are unchanged.
+inline int compareNamesNaturally (const std::string& a, const std::string& b) noexcept
+{
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size())
+    {
+        const auto ca = (unsigned char) a[i], cb = (unsigned char) b[j];
+        if (std::isdigit (ca) && std::isdigit (cb))
+        {
+            size_t ei = i, ej = j;
+            while (ei < a.size() && a[ei] == '0') ++ei; // ignore leading zeros
+            while (ej < b.size() && b[ej] == '0') ++ej;
+            size_t ni = ei, nj = ej;
+            while (ni < a.size() && std::isdigit ((unsigned char) a[ni])) ++ni;
+            while (nj < b.size() && std::isdigit ((unsigned char) b[nj])) ++nj;
+            if (ni - ei != nj - ej)
+                return ni - ei < nj - ej ? -1 : 1;
+            for (size_t k = 0; k < ni - ei; ++k)
+                if (a[ei + k] != b[ej + k])
+                    return a[ei + k] < b[ej + k] ? -1 : 1;
+            i = ni;
+            j = nj;
+            continue;
+        }
+        const int la = std::tolower (ca), lb = std::tolower (cb);
+        if (la != lb)
+            return la < lb ? -1 : 1;
+        ++i;
+        ++j;
+    }
+    return (i < a.size()) - (j < b.size());
+}
+
+inline bool channelListOrder (const LinkedChannelInfo& a, const LinkedChannelInfo& b) noexcept
+{
+    if (a.group != b.group)
+        return a.group < b.group;
+    if (const int byName = compareNamesNaturally (a.label, b.label); byName != 0)
+        return byName < 0;
+    return a.slot < b.slot;
+}
 
 //==================================================================================================
 struct InstanceLinkSettings

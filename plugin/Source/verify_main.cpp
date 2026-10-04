@@ -4,6 +4,7 @@
 #include "InstanceLink.h"
 
 #include <chrono>
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -483,6 +484,26 @@ void linkTests()
         for (size_t i = 0; i < chans.size(); ++i)
             worst = std::max (worst, maxDiff (chans[i].audio, reference[i]));
         check (worst == 0.0, "offline with groups A and B: identical to exact per-group reference", worst, 0.0);
+    }
+
+    std::printf ("\nChannel list order\n");
+    {
+        auto info = [] (int group, const char* label, int slot)
+        {
+            sgtm::LinkedChannelInfo c;
+            c.group = group;
+            c.label = label;
+            c.slot = slot;
+            return c;
+        };
+        std::vector<sgtm::LinkedChannelInfo> list { info (0, "Audio 10", 0), info (1, "Aaron", 1), info (0, "audio 2", 2),
+                                                    info (0, "Pastor", 3), info (0, "Audio 2", 4), info (0, "Audio 1", 5) };
+        std::sort (list.begin(), list.end(), sgtm::channelListOrder);
+        std::string order;
+        for (const auto& c : list)
+            order += c.label + "|";
+        check (order == "Audio 1|audio 2|Audio 2|Audio 10|Pastor|Aaron|",
+               "list sorted by group, then name (natural numbers, any case), then slot");
     }
 
     std::printf ("\nMono and stereo together\n");

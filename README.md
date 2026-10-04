@@ -58,7 +58,8 @@ automixer, and works best with one microphone per talker.
   stereo track), **GAIN** the gain the channel lets through. One gain applies
   to both sides of a stereo track, set from the level of both sides together,
   so the stereo image does not shift.
-- The channel list shows every running channel, sorted by group: its group,
+- The channel list shows every running channel, sorted by group and then
+  by name: its group,
   name, input level, gain (full at 0 dB, empty at −15 dB) and weight, with
   this instance highlighted. Click the name
   field to name the channel; left empty, it uses the host's track name where
