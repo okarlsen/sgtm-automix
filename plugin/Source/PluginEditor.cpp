@@ -5,17 +5,27 @@ namespace sgtm
 {
 
 //==================================================================================================
-LevelMeter::LevelMeter (juce::String labelText, float min, float max, juce::Colour barColour)
-    : label (std::move (labelText)), minDb (min), maxDb (max), colour (barColour), displayDb (min)
+namespace
+{
+// Gain-reduction scale shared by the GAIN meter and the channel list: 0 to -20 dB, so the -10 dB
+// that ten equal mics settle at sits half way. Anything below -20 dB fills the bar.
+constexpr float reductionRangeDb = 20.0f;
+constexpr float reductionTicksDb[] = { 0.0f, -3.0f, -6.0f, -10.0f, -20.0f };
+
+float reductionProportion (float gainDb) { return juce::jlimit (0.0f, 1.0f, -gainDb / reductionRangeDb); }
+} // namespace
+
+LevelMeter::LevelMeter (juce::String labelText, float min, float max, juce::Colour barColour, bool isReductionMeter)
+    : label (std::move (labelText)), minDb (min), maxDb (max), colour (barColour), reduction (isReductionMeter),
+      displayDb (isReductionMeter ? max : min)
 {
 }
 
 void LevelMeter::setLevelDb (float db)
 {
-    // Instant rise, ~20 dB/s fall at 30 Hz refresh.
+    // Level: instant rise, ~20 dB/s fall at 30 Hz refresh. Reduction: instant, ~20 dB/s recovery.
     db = juce::jlimit (minDb, maxDb, db);
-    const float fallen = displayDb - 0.7f;
-    const float next = std::max (db, fallen);
+    const float next = reduction ? std::min (db, displayDb + 0.7f) : std::max (db, displayDb - 0.7f);
     if (! juce::approximatelyEqual (next, displayDb))
     {
         displayDb = next;
@@ -32,10 +42,31 @@ void LevelMeter::paint (juce::Graphics& g)
     g.setColour (juce::Colour (0xff202124));
     g.fillRoundedRectangle (bar, 3.0f);
 
-    const float proportion = (displayDb - minDb) / (maxDb - minDb);
-    auto filled = bar.withTop (bar.getBottom() - bar.getHeight() * proportion);
-    g.setColour (colour);
-    g.fillRoundedRectangle (filled, 3.0f);
+    if (reduction)
+    {
+        const float proportion = (maxDb - displayDb) / (maxDb - minDb);
+        g.setColour (colour);
+        g.fillRoundedRectangle (bar.withHeight (bar.getHeight() * proportion), 3.0f);
+
+        g.setFont (9.0f);
+        for (float tick : reductionTicksDb)
+        {
+            const float y = bar.getY() + bar.getHeight() * (maxDb - tick) / (maxDb - minDb);
+            g.setColour (juce::Colours::white.withAlpha (0.35f));
+            g.drawHorizontalLine ((int) std::round (y), bar.getX(), bar.getX() + 6.0f);
+            g.setColour (juce::Colours::lightgrey);
+            auto text = juce::Rectangle<float> (bar.getX() + 7.0f, y - 6.0f, bar.getWidth() - 8.0f, 12.0f)
+                            .constrainedWithin (bar);
+            g.drawText (juce::String ((int) tick), text, juce::Justification::centredLeft);
+        }
+    }
+    else
+    {
+        const float proportion = (displayDb - minDb) / (maxDb - minDb);
+        auto filled = bar.withTop (bar.getBottom() - bar.getHeight() * proportion);
+        g.setColour (colour);
+        g.fillRoundedRectangle (filled, 3.0f);
+    }
 
     g.setColour (juce::Colours::lightgrey);
     g.setFont (12.0f);
@@ -82,7 +113,7 @@ void ChannelList::paint (juce::Graphics& g)
         g.drawText ("Gain dB", row.removeFromRight (56), juce::Justification::centredRight);
         row.removeFromRight (6);
         g.drawText ("Input", row.removeFromLeft (row.getWidth() / 2), juce::Justification::centredLeft);
-        g.drawText ("Automix gain", row.withTrimmedLeft (4), juce::Justification::centredLeft);
+        g.drawText ("Gain reduction", row.withTrimmedLeft (4), juce::Justification::centredLeft);
     }
 
     if (channels.empty())
@@ -131,7 +162,13 @@ void ChannelList::paint (juce::Graphics& g)
         const auto bars = row.toFloat().reduced (0, 4);
         const auto half = bars.getWidth() / 2.0f - 2.0f;
         drawBar (bars.withWidth (half), (c.inputDb + 60.0f) / 60.0f, juce::Colour (0xff4caf50));
-        drawBar (bars.withTrimmedLeft (half + 4.0f), (c.gainDb + 40.0f) / 40.0f, juce::Colour (0xffffb300));
+        const auto gainBar = bars.withTrimmedLeft (half + 4.0f);
+        drawBar (gainBar, reductionProportion (c.gainDb), juce::Colour (0xffffb300));
+        g.setColour (juce::Colours::white.withAlpha (0.35f));
+        for (float tick : reductionTicksDb)
+            if (tick < 0.0f && tick > -reductionRangeDb)
+                g.drawVerticalLine ((int) std::round (gainBar.getX() + gainBar.getWidth() * reductionProportion (tick)),
+                                    gainBar.getY(), gainBar.getBottom());
     }
 }
 

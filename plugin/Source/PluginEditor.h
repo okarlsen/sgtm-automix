@@ -5,11 +5,13 @@
 namespace sgtm
 {
 
-// Vertical bar meter with a decaying display value.
+// Vertical bar meter with a decaying display value. A reduction meter fills from the top as the
+// value drops below maxDb and shows dB ticks.
 class LevelMeter final : public juce::Component
 {
 public:
-    LevelMeter (juce::String labelText, float minDb, float maxDb, juce::Colour barColour);
+    LevelMeter (juce::String labelText, float minDb, float maxDb, juce::Colour barColour,
+                bool isReductionMeter = false);
 
     void setLevelDb (float db);
     void paint (juce::Graphics&) override;
@@ -18,6 +20,7 @@ private:
     juce::String label;
     float minDb, maxDb;
     juce::Colour colour;
+    bool reduction;
     float displayDb;
 };
 
@@ -54,7 +57,7 @@ private:
     juce::Image logoImage;
 
     LevelMeter inputMeter { "IN", -60.0f, 0.0f, juce::Colour (0xff4caf50) };
-    LevelMeter gainMeter { "GAIN", -40.0f, 0.0f, juce::Colour (0xffffb300) };
+    LevelMeter gainMeter { "GAIN", -20.0f, 0.0f, juce::Colour (0xffffb300), true };
     LevelMeter outputMeter { "OUT", -60.0f, 0.0f, juce::Colour (0xff42a5f5) };
 
     juce::Slider weightSlider, outputGainSlider;
