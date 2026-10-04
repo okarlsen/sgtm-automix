@@ -18,6 +18,9 @@ All notable changes to SGTM Automix are documented here. Versions follow
 - Gain meters show the gain each channel lets through, 0 to −15 dB.
 - Channels without signal (below −81 dBFS for a second; back in at −75 dBFS)
   take no share, so a faded-down channel doesn't turn the others down.
+- The level detector listens to the voice band only (150 Hz to 5 kHz
+  band-pass on its copy; the audio is untouched), so rumble and hiss take no
+  share and a channel with only rumble counts as no signal.
 - Detector attack 15 ms (was 5 ms) for a softer fade-up on word starts.
 - IN and OUT meters show left and right separately on stereo tracks, and the channel list
   shows a left/right input pair for stereo channels.

@@ -23,6 +23,7 @@
 // well below an open microphone's room tone, so open but quiet mics still count.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 
@@ -45,6 +46,14 @@ struct EngineSettings
     // Bypass fades the channel to unity gain, and its share out of the group, over this time.
     // Joining or leaving because of signal presence uses the same fade.
     double bypassFadeMs = 20.0;
+
+    // The detector listens to the voice band only: its copy of the signal goes through a band-pass
+    // (2nd-order high-pass and low-pass, IIR, no look-ahead), so rumble, handling noise and hiss
+    // take no share. The audio itself is never filtered. Set detectorVoiceBand to false to revert
+    // to the full-band detector.
+    bool detectorVoiceBand = true;
+    double detectorHighPassHz = 150.0;
+    double detectorLowPassHz = 5000.0;
 
     // Signal presence, on the unweighted detector level: present from presenceOnDb up, absent
     // after staying below presenceOffDb for presenceHoldMs.
@@ -130,11 +139,15 @@ public:
         presenceOnPower = std::pow (10.0, settings.presenceOnDb / 10.0);
         presenceOffPower = std::pow (10.0, settings.presenceOffDb / 10.0);
         presenceHoldHops = std::max (1, (int) std::lround (settings.presenceHoldMs * hopsPerSecond / 1000.0));
+        highPass = Biquad::butterworth (sampleRate, settings.detectorHighPassHz, true);
+        lowPass = Biquad::butterworth (sampleRate, std::min (settings.detectorLowPassHz, 0.45 * sampleRate), false);
         reset();
     }
 
     void reset() noexcept
     {
+        for (auto& s : filterState)
+            s = {};
         hopAccumulator = 0.0;
         hopFill = 0;
         expectedNextSample = 0;
@@ -184,7 +197,12 @@ public:
             double power = 0.0;
             for (int ch = 0; ch < numChannels; ++ch)
             {
-                const double x = channels[ch][i];
+                double x = channels[ch][i];
+                if (settings.detectorVoiceBand && ch < maxFilteredChannels)
+                {
+                    auto& s = filterState[(size_t) ch];
+                    x = lowPass.process (highPass.process (x, s.hp), s.lp);
+                }
                 power += x * x;
             }
             hopAccumulator += power * channelNorm;
@@ -205,6 +223,8 @@ public:
     }
 
     double getSmoothedPower() const noexcept { return smoothedPower; }
+
+    static constexpr int maxFilteredChannels = 8;
     double getLastInputPower() const noexcept { return lastInputPower; }
     double getCurrentGain() const noexcept { return currentGain; }
     bool isBypassed() const noexcept { return bypassTarget > 0.5; }
@@ -279,7 +299,40 @@ private:
         return m < 0 ? m + b : m;
     }
 
+    // Transposed direct form II biquad (RBJ Butterworth, Q = 0.7071), coefficients normalised.
+    struct Biquad
+    {
+        struct State { double z1 = 0.0, z2 = 0.0; };
+        double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
+
+        static Biquad butterworth (double sampleRate, double cornerHz, bool isHighPass) noexcept
+        {
+            const double w = 2.0 * 3.14159265358979323846 * cornerHz / sampleRate;
+            const double alpha = std::sin (w) / (2.0 * 0.70710678118654752440);
+            const double c = std::cos (w), a0 = 1.0 + alpha;
+            Biquad q;
+            q.b0 = (isHighPass ? (1.0 + c) : (1.0 - c)) / 2.0 / a0;
+            q.b1 = (isHighPass ? -(1.0 + c) : (1.0 - c)) / a0;
+            q.b2 = q.b0;
+            q.a1 = -2.0 * c / a0;
+            q.a2 = (1.0 - alpha) / a0;
+            return q;
+        }
+
+        double process (double x, State& s) const noexcept
+        {
+            const double y = b0 * x + s.z1;
+            s.z1 = b1 * x - a1 * y + s.z2;
+            s.z2 = b2 * x - a2 * y;
+            return y;
+        }
+    };
+
+    struct ChannelFilterState { Biquad::State hp, lp; };
+
     EngineSettings settings;
+    Biquad highPass, lowPass;
+    std::array<ChannelFilterState, maxFilteredChannels> filterState {};
     double attackCoeff = 0.0, releaseCoeff = 0.0;
     double weightPower = 1.0;
 

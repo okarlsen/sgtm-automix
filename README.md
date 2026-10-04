@@ -37,6 +37,9 @@ automixer, and works best with one microphone per talker.
 - **Bypass** puts the channel at unity gain and takes it out of the gain
   sharing, so the other channels share as if it were not there. It fades
   over 20 ms and follows the host's own bypass button.
+- The automixer judges levels in the voice band only (150 Hz to 5 kHz), so
+  stage rumble, handling noise and hiss don't take a share. The audio itself
+  is not filtered.
 - **No signal:** a channel whose level stays below −81 dBFS for a second
   (fader down, muted, nothing connected) drops out of the sharing and sits at
   unity, so it doesn't take a share from the others. It rejoins as soon as

@@ -83,6 +83,35 @@ std::vector<float> noise (int n, double rmsDb, unsigned seed)
     return v;
 }
 
+// Noise inside the voice band (about 300 Hz to 3 kHz) at the given RMS level, standing in for
+// room tone or speech where the detector's voice-band filter would otherwise change the level.
+std::vector<float> voiceNoise (int n, double rmsDb, unsigned seed)
+{
+    auto v = noise (n, 0.0, seed);
+    double hpState = 0.0, prev = 0.0, lp = 0.0, sum = 0.0;
+    for (auto& x : v)
+    {
+        hpState = 0.962 * (hpState + x - prev); // one-pole high-pass, ~300 Hz
+        prev = x;
+        lp += 0.33 * (hpState - lp);            // one-pole low-pass, ~3 kHz
+        x = (float) lp;
+        sum += lp * lp;
+    }
+    const double scale = sgtm::dbToGain (rmsDb) / std::sqrt (sum / n);
+    for (auto& x : v)
+        x = (float) (x * scale);
+    return v;
+}
+
+std::vector<float> sine (int n, double hz, double rmsDb)
+{
+    std::vector<float> v ((size_t) n);
+    const double amp = sgtm::dbToGain (rmsDb) * std::sqrt (2.0);
+    for (int i = 0; i < n; ++i)
+        v[(size_t) i] = (float) (amp * std::sin (2.0 * 3.14159265358979 * hz * i / 48000.0));
+    return v;
+}
+
 // Runs N mono channels in lockstep through a FakeLink and returns each channel's final gain in dB.
 std::vector<double> runGroup (const std::vector<double>& levelsDb, const std::vector<double>& weightsDb = {})
 {
@@ -495,6 +524,47 @@ void linkTests()
                "a channel switching from stereo to mono keeps its share without a jump", biggestStep, 0.05);
     }
 
+    std::printf ("\nVoice-band detector\n");
+    {
+        // A talker sharing a group with a channel carrying only 50 Hz rumble, or only 10 kHz hiss,
+        // at the same RMS level: the detector ignores both, so the talker keeps nearly full gain.
+        auto talkerGain = [] (const std::vector<float>& other, bool voiceBand)
+        {
+            sgtm::EngineSettings st;
+            st.detectorVoiceBand = voiceBand;
+            std::vector<sgtm::AutomixChannel> c (2);
+            for (auto& ch : c)
+                ch.prepare (48000.0, st);
+            FakeLink link;
+            link.numChannels = 2;
+            link.newest.assign (2, 0.0);
+            std::vector<FakeLink::Endpoint> ends (2);
+            std::vector<std::vector<float>> audio { voiceNoise (48000, -30.0, 61u), other };
+            for (int i = 0; i < 2; ++i)
+            {
+                ends[(size_t) i].link = &link;
+                ends[(size_t) i].index = i;
+            }
+            for (int pos = 0; pos + 16 <= 48000; pos += 16)
+                for (int i = 0; i < 2; ++i)
+                {
+                    float* p = audio[(size_t) i].data() + pos;
+                    c[(size_t) i].process (&p, 1, 16, pos, &ends[(size_t) i]);
+                }
+            return sgtm::gainToDb (c[0].getCurrentGain());
+        };
+        const auto rumble = sine (48000, 50.0, -30.0), hiss = sine (48000, 10000.0, -30.0);
+        const double withRumble = talkerGain (rumble, true), withHiss = talkerGain (hiss, true);
+        check (withRumble > -0.5, "50 Hz rumble at the talker's level no longer takes gain from the talker", withRumble, 0.0);
+        check (withHiss > -0.5, "10 kHz hiss at the talker's level no longer takes gain from the talker", withHiss, 0.0);
+        check (near (talkerGain (rumble, false), -3.0, 0.6), "(the full-band detector would have shared it: -3 dB)",
+               talkerGain (rumble, false), -3.0);
+        const double voiceBoth = talkerGain (voiceNoise (48000, -30.0, 62u), true);
+        const double voiceFull = talkerGain (voiceNoise (48000, -30.0, 62u), false);
+        check (near (voiceBoth, voiceFull, 0.3) && near (voiceBoth, -3.0, 0.6),
+               "two equal voices share as before (-3 dB, same as the full-band detector)", voiceBoth, voiceFull);
+    }
+
     std::printf ("\nFade-up\n");
     {
         // Ten open mics at room tone; one starts talking at -20 dBFS. With the 15 ms attack it
@@ -502,7 +572,9 @@ void linkTests()
         LinkTestName shm;
         const int total = 48000 * 3, onset = 48000 * 2;
         auto chans = makeLinkedChannels (shm.name, std::vector<double> (10, -71.4), total);
-        auto talk = noise (total - onset, -20.0, 4242u);
+        for (size_t i = 0; i < chans.size(); ++i)
+            chans[i].audio = voiceNoise (total, -71.4, 300u + (unsigned) i);
+        auto talk = voiceNoise (total - onset, -20.0, 4242u);
         std::copy (talk.begin(), talk.end(), chans[0].audio.begin() + onset);
         double reachedMs = -1.0;
         for (int pos = 0; pos + 64 <= total; pos += 64)
@@ -518,9 +590,16 @@ void linkTests()
     std::printf ("\nSignal presence\n");
     {
         LinkTestName shm;
-        auto g = runLiveGroup (shm.name, std::vector<double> (10, -71.4));
-        check (near (g[0], -10.0, 0.6) && near (g[9], -10.0, 0.6),
-               "10 open mics at room tone (-71.4 dBFS): each about -10 dB", g[0], -10.0);
+        auto chans = makeLinkedChannels (shm.name, std::vector<double> (10, -71.4), 48000);
+        for (size_t i = 0; i < chans.size(); ++i)
+            chans[i].audio = voiceNoise (48000, -71.4, 500u + (unsigned) i);
+        for (int pos = 0; pos + 64 <= 48000; pos += 64)
+            for (auto& c : chans)
+                processBlock (c, pos, 64, false, 1'000'000'000 + pos * nsPerSample);
+        const double g0 = sgtm::gainToDb (chans[0].engine.getCurrentGain());
+        const double g9 = sgtm::gainToDb (chans[9].engine.getCurrentGain());
+        check (near (g0, -10.0, 0.6) && near (g9, -10.0, 0.6),
+               "10 open mics at room tone (-71.4 dBFS): each about -10 dB", g0, -10.0);
     }
     {
         LinkTestName shm;
@@ -559,7 +638,7 @@ void linkTests()
         c.prepare (linkRate);
         auto run = [&] (double db, int samples)
         {
-            auto a = noise (samples, db, 77u);
+            auto a = voiceNoise (samples, db, 77u);
             for (int pos = 0; pos + 64 <= samples; pos += 64)
             {
                 float* p = a.data() + pos;
