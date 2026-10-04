@@ -70,6 +70,10 @@ public:
 private:
     void timerCallback() override;
     void updateGroupColours();
+    void showHelpDialog();
+
+    static constexpr int helpButtonSize = 22;
+    juce::TextButton helpButton { "?" };
 
     static constexpr int minWidth = 460, minHeight = 450;
 

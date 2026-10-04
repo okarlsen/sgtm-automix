@@ -31,6 +31,8 @@ All notable changes to SGTM Automix are documented here. Versions follow
   meters run from 0 to −80 dBFS.
 - Group selector coloured by group, matching the channel list.
 - Resizable window: the channel list takes the extra height.
+- Help window ("?" in the title bar) with a control reference and the
+  disclaimer.
 
 ## [0.1.0] — development skeleton (not released)
 

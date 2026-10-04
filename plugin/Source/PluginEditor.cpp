@@ -299,6 +299,10 @@ AutomixEditor::AutomixEditor (AutomixProcessor& p)
     groupLabel.setText ("Group", juce::dontSendNotification);
     groupLabel.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (groupLabel);
+    helpButton.setTooltip ("Help");
+    helpButton.onClick = [this] { showHelpDialog(); };
+    addAndMakeVisible (helpButton);
+
     groupBox.setTooltip ("Gain is shared only with channels in the same group");
     groupBox.setLookAndFeel (&groupLookAndFeel);
     updateGroupColours();
@@ -347,14 +351,163 @@ void AutomixEditor::paint (juce::Graphics& g)
     g.setFont (juce::FontOptions (16.0f, juce::Font::bold));
     g.drawText ("Automix", header, juce::Justification::centredLeft);
 
-    // Version in the title bar, so a screenshot or bug report says which build is running.
+    // Version in the title bar, left of the help button, so a screenshot or bug report says
+    // which build is running.
+    header.removeFromRight (helpButtonSize + 6);
     g.setColour (juce::Colours::grey);
     g.setFont (juce::FontOptions (12.0f));
     g.drawText ("v" JucePlugin_VersionString, header, juce::Justification::centredRight);
 }
 
+void AutomixEditor::showHelpDialog()
+{
+    // Reads top to bottom like the window: setup, controls, the channel list, meters, then how it
+    // decides and what to do when something is off.
+    static const juce::String helpText =
+        "SGTM AUTOMIX keeps the total gain of all your speech microphones at the level of one "
+        "open microphone. Whoever talks comes up, the others go down, smoothly and with no "
+        "thresholds to set and no added latency. Put one SGTM Automix on every speech track; "
+        "the instances find each other by themselves.\n"
+        "\n"
+        "\n"
+        "=== SETTING UP ===\n"
+        "\n"
+        "WHERE TO INSERT IT\n"
+        "Post-fader, after EQ and before any compressor. Use one microphone per talker. With "
+        "the plug-in post-fader, a channel whose fader is down stops taking part by itself.\n"
+        "\n"
+        "HOW CHANNELS FIND EACH OTHER\n"
+        "Every SGTM Automix on this computer links up automatically, in any host and across "
+        "host processes, up to 64 channels. Run one host session at a time while using it: "
+        "two hosts open at once would link with each other. After updating the plug-in, quit "
+        "the host completely and reopen it, so all channels run the same version.\n"
+        "\n"
+        "\n"
+        "=== CONTROLS ===\n"
+        "\n"
+        "WEIGHT\n"
+        "A channel's priority. It changes how loud the channel looks to the automix, not its "
+        "audio level. Raise it for a moderator who should never be buried; lower it for a "
+        "noisy position. With nobody talking, balanced weights give every channel about the "
+        "same gain.\n"
+        "\n"
+        "OUTPUT\n"
+        "A plain output trim after the automix.\n"
+        "\n"
+        "BYPASS\n"
+        "Passes the channel's audio through unchanged, Output trim included, and takes it out "
+        "of the sharing, so the other channels share as if it were not there. Fades over "
+        "20 ms. The host's own bypass switch does the same.\n"
+        "\n"
+        "GROUP (A, B, C)\n"
+        "Gain is shared only among channels in the same group, so up to three separate "
+        "automixes can run at once, for example one per panel or stage. Changing group fades "
+        "over 20 ms.\n"
+        "\n"
+        "AUTOMIX ON (ALL CHANNELS)\n"
+        "Switches the automix off and on for every channel in every group at once, for A/B "
+        "comparison. Off, every channel runs at unity gain. It turns itself back on when a "
+        "new session starts.\n"
+        "\n"
+        "CHANNEL NAME\n"
+        "Click the name field to name the channel. Left empty, it uses the host's track name "
+        "where the host provides one.\n"
+        "\n"
+        "\n"
+        "=== THE CHANNEL LIST ===\n"
+        "Every SGTM Automix that is running, sorted by group, with this channel highlighted: "
+        "its group, name, input level (left and right on a stereo track), the gain it lets "
+        "through, and its weight. The status line counts the active channels in this "
+        "channel's group.\n"
+        "\n"
+        "BYPASS: the channel is bypassed.\n"
+        "NO SIGNAL: the channel is quiet enough to be left out (see below).\n"
+        "IDLE: the host is not running the plug-in on that track, for example a track that "
+        "is not playing while the transport is stopped.\n"
+        "\n"
+        "Drag the window's bottom-right corner to make it larger and see more of the list.\n"
+        "\n"
+        "\n"
+        "=== METERS ===\n"
+        "\n"
+        "IN / OUT\n"
+        "Input and output level, 0 to -80 dBFS, left and right on a stereo track.\n"
+        "\n"
+        "GAIN\n"
+        "The gain the channel lets through: full at 0 dB, empty at -15 dB or lower. A channel "
+        "talking alone reads full. With N equal channels and nobody talking, each sits at "
+        "about 10 x log10(N) dB down, so two read -3 dB and ten read -10 dB.\n"
+        "\n"
+        "\n"
+        "=== HOW IT DECIDES ===\n"
+        "\n"
+        "LEVELS IN THE VOICE BAND\n"
+        "Each channel's level is judged between 150 Hz and 5 kHz only, so rumble, handling "
+        "noise and hiss take no share. The audio itself is not filtered. One gain applies to "
+        "both sides of a stereo track, so the stereo image never shifts.\n"
+        "\n"
+        "NO SIGNAL\n"
+        "A channel that stays below -81 dBFS for a second (fader down, muted, nothing "
+        "connected) drops out of the sharing and sits at unity, so it does not turn the others "
+        "down. It rejoins as soon as it reaches -75 dBFS. An open microphone's room tone sits "
+        "above that, so quiet open mics still count.\n"
+        "\n"
+        "TIMING\n"
+        "A talker comes up within a few milliseconds and channels settle back over a few "
+        "hundred milliseconds after someone stops. Offline bounces are calculated "
+        "sample-exactly across all channels.\n"
+        "\n"
+        "\n"
+        "=== IF SOMETHING IS OFF ===\n"
+        "\n"
+        "\"LINK UNAVAILABLE\"\n"
+        "The channel could not reach the others and runs on its own at unity gain. The reason "
+        "is shown in brackets. Quit the host completely and reopen it; if it persists, restart "
+        "the computer.\n"
+        "\n"
+        "A CHANNEL IS MISSING FROM THE LIST\n"
+        "Check that every track runs the same version of the plug-in (quit and reopen the "
+        "host after an update), and that the host is processing the track.\n"
+        "\n"
+        "\n"
+        "SGTM Automix is free to use, provided as-is with no warranty of any kind. Use it at "
+        "your own risk.";
+
+    auto* content = new juce::TextEditor();
+    content->setMultiLine (true);
+    content->setReadOnly (true);
+    content->setScrollbarsShown (true);
+    content->setCaretVisible (false);
+    content->setPopupMenuEnabled (true);
+    content->setFont (juce::FontOptions (14.0f));
+    content->setText (helpText, false);
+    content->setSize (420, 520);
+
+    // Colours are set on the text directly: the dialog is a separate window, launched async, so
+    // it can outlive this editor and must not point at anything the editor owns.
+    content->setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff2b2d31));
+    content->setColour (juce::TextEditor::textColourId, juce::Colours::white);
+    content->setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+    content->setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+    content->setColour (juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
+    content->setColour (juce::TextEditor::highlightColourId, juce::Colour (0xffffb300).withAlpha (0.35f));
+    content->setColour (juce::TextEditor::highlightedTextColourId, juce::Colours::white);
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned (content);
+    options.dialogTitle = "SGTM Automix -- Help";
+    options.dialogBackgroundColour = juce::Colour (0xff2b2d31);
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.launchAsync();
+}
+
 void AutomixEditor::resized()
 {
+    helpButton.setBounds (getLocalBounds().removeFromTop (34).reduced (12, 6).removeFromRight (helpButtonSize)
+                              .withSizeKeepingCentre (helpButtonSize, helpButtonSize));
+
     auto area = getLocalBounds().reduced (12);
     area.removeFromTop (28);
 
