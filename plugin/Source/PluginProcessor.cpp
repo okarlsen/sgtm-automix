@@ -16,6 +16,7 @@ AutomixProcessor::AutomixProcessor()
     bypass = parameters.getRawParameterValue (bypassId);
     groupParam = parameters.getRawParameterValue (groupId);
     link.join();
+    numChannelsChanged();
 }
 
 AutomixProcessor::~AutomixProcessor()
@@ -169,6 +170,15 @@ void AutomixProcessor::setStateInformation (const void* data, int sizeInBytes)
             parameters.replaceState (state);
             triggerAsyncUpdate();
         }
+}
+
+// The track's layout is known as soon as the host sets it, before any audio is processed, so the
+// meters and the channel list show mono or stereo correctly from the moment a session opens.
+void AutomixProcessor::numChannelsChanged()
+{
+    const int channels = std::max (1, getMainBusNumInputChannels());
+    meters.numChannels.store (channels, std::memory_order_relaxed);
+    link.setInputSides (-120.0f, -120.0f, channels);
 }
 
 // Hosts may call this from any thread; the link is updated on the message thread.

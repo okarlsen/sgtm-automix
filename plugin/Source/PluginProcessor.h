@@ -39,6 +39,7 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
     void updateTrackProperties (const TrackProperties& properties) override;
+    void numChannelsChanged() override;
 
     juce::AudioProcessorValueTreeState& getParameters() noexcept { return parameters; }
 
