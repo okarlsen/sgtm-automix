@@ -232,12 +232,12 @@ void ChannelList::paint (juce::Graphics& g)
         {
             // Thin left/right pair.
             const float h = (inputBar.getHeight() - 2.0f) / 2.0f;
-            drawBar (inputBar.withHeight (h), (c.inputLeftDb + 60.0f) / 60.0f, inputColour);
-            drawBar (inputBar.withTrimmedTop (h + 2.0f), (c.inputRightDb + 60.0f) / 60.0f, inputColour);
+            drawBar (inputBar.withHeight (h), (c.inputLeftDb + levelRangeDb) / levelRangeDb, inputColour);
+            drawBar (inputBar.withTrimmedTop (h + 2.0f), (c.inputRightDb + levelRangeDb) / levelRangeDb, inputColour);
         }
         else
         {
-            drawBar (inputBar, (c.inputDb + 60.0f) / 60.0f, inputColour);
+            drawBar (inputBar, (c.inputDb + levelRangeDb) / levelRangeDb, inputColour);
         }
         const auto gainBar = bars.withTrimmedLeft (half + 4.0f);
         const auto gainColour = juce::Colour (0xffffb300);

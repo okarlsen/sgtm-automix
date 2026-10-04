@@ -5,6 +5,10 @@
 namespace sgtm
 {
 
+// Level meters (IN, OUT and the input bars in the channel list) run from 0 down to -80 dBFS, so
+// the quiet region around the no-signal threshold (-75 dBFS) is visible.
+constexpr float levelRangeDb = 80.0f;
+
 // Vertical bar meter with a decaying display value, optionally with dB ticks and dimmed.
 class LevelMeter final : public juce::Component
 {
@@ -72,9 +76,9 @@ private:
     AutomixProcessor& processor;
     juce::Image logoImage;
 
-    LevelMeter inputMeter { "IN", -60.0f, 0.0f, juce::Colour (0xff4caf50) };
+    LevelMeter inputMeter { "IN", -levelRangeDb, 0.0f, juce::Colour (0xff4caf50) };
     LevelMeter gainMeter { "GAIN", -15.0f, 0.0f, juce::Colour (0xffffb300), true };
-    LevelMeter outputMeter { "OUT", -60.0f, 0.0f, juce::Colour (0xff42a5f5) };
+    LevelMeter outputMeter { "OUT", -levelRangeDb, 0.0f, juce::Colour (0xff42a5f5) };
 
     juce::Slider weightSlider, outputGainSlider;
     juce::Label weightLabel, outputGainLabel;
