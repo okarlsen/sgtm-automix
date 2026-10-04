@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -53,7 +54,11 @@ namespace sgtm
 
 namespace linkdetail
 {
-constexpr uint32_t magic = 0x53414d31; // layout tag; bump with the version in the name
+constexpr uint32_t magic = 0x53414d31;
+
+// Bump whenever Shared or Slot changes. New fields can fit in a slot's alignment padding without
+// changing its size, so the size alone does not tell layouts apart.
+constexpr int layoutVersion = 4;
 constexpr int maxSlots = 64;
 constexpr int ringHops = 8192;          // ~2.7 s at 48 kHz with 16-sample hops
 constexpr int labelBytes = 48;
@@ -149,14 +154,14 @@ public:
             .count();
     }
 
-    // One block per user and per layout. The layout size is in the name, so a build with a
-    // different layout never meets a block left by another build (a block outlives the processes
-    // that used it until the Mac restarts). Builds with different layouts do not link.
+    // One block per user and per layout. The layout version and size are in the name, so a build
+    // with a different layout never meets a block left by another build (a block outlives the
+    // processes that used it until the Mac restarts). Builds with different layouts do not link.
     static std::string defaultName()
     {
 #if SGTM_LINK_POSIX
-        return "/sgtm-automix-" + std::to_string (sizeof (linkdetail::Shared)) + "-"
-               + std::to_string ((unsigned long) getuid());
+        return "/sgtm-automix-v" + std::to_string (linkdetail::layoutVersion) + "-"
+               + std::to_string (sizeof (linkdetail::Shared)) + "-" + std::to_string ((unsigned long) getuid());
 #else
         return {};
 #endif
@@ -230,7 +235,10 @@ public:
                     initialiseSlot (s);
                     self = &s;
                     selfIndex = i;
-                    publishLabel();
+                    {
+                        const std::lock_guard<std::mutex> lock (labelMutex);
+                        publishLabel();
+                    }
 
                     // The all-channels switch lives as long as the shared block (until restart),
                     // so a new session never starts with the automix off from an earlier one.
@@ -266,8 +274,10 @@ public:
         return shared == nullptr || shared->automixOff.load (std::memory_order_acquire) == 0;
     }
 
+    // Any thread but the audio thread; serialised, so concurrent callers cannot interleave.
     void setLabel (const std::string& newLabel)
     {
+        const std::lock_guard<std::mutex> lock (labelMutex);
         label = newLabel.substr (0, linkdetail::labelBytes - 1);
         publishLabel();
     }
@@ -612,6 +622,10 @@ private:
         s.latestHop.store (INT64_MIN, std::memory_order_relaxed);
         s.latestPowerBits.store (linkdetail::toBits (EngineSettings {}.powerFloor), std::memory_order_relaxed);
         s.bypassed.store (0, std::memory_order_relaxed);
+        // A previous owner may have died mid-write and left the sequence odd; start clean.
+        s.labelSeq.store (0, std::memory_order_relaxed);
+        for (auto& w : s.labelWords)
+            w.store (0, std::memory_order_relaxed);
         s.group.store ((uint32_t) group, std::memory_order_relaxed);
         s.prevGroup.store ((uint32_t) group, std::memory_order_relaxed);
         s.fadeBits.store (linkdetail::toBits (1.0f), std::memory_order_relaxed);
@@ -729,6 +743,7 @@ private:
     linkdetail::Slot* self = nullptr;
     int selfIndex = -1;
     uint64_t token = 0;
+    std::mutex labelMutex;
     std::string label;
     std::string unavailableReason;
 

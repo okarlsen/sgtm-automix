@@ -9,6 +9,8 @@
 #include <string>
 #include <thread>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <map>
 #include <random>
 #include <vector>
@@ -583,6 +585,32 @@ void linkTests()
         sgtm::InstanceLink c (shm.name);
         c.join();
         check (c.isAutomixOn(), "a new session starts with the automix on");
+    }
+
+    {
+        // A slot whose previous owner died mid-way through writing its name (odd sequence) is
+        // reset when the slot is taken again, so the new owner's name can be read.
+        LinkTestName shm;
+        auto a = std::make_unique<sgtm::InstanceLink> (shm.name);
+        a->join();
+        {
+            const int fd = shm_open (shm.name.c_str(), O_RDWR, 0600);
+            auto* shared = static_cast<sgtm::linkdetail::Shared*> (
+                mmap (nullptr, sizeof (sgtm::linkdetail::Shared), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+            close (fd);
+            shared->slots[a->getSlotIndex()].labelSeq.store (31097); // stuck mid-write
+            munmap (shared, sizeof (sgtm::linkdetail::Shared));
+        }
+        a.reset();
+        sgtm::InstanceLink b (shm.name), reader (shm.name);
+        b.join();
+        reader.join();
+        b.setLabel ("Vocal L");
+        b.beginBlock (sgtm::InstanceLink::steadyNowNs(), false, 0, 64);
+        bool found = false;
+        for (const auto& c : reader.getChannels())
+            found = found || c.label == "Vocal L";
+        check (found, "a name half-written by a crashed owner does not hide the next owner's name");
     }
 
     {

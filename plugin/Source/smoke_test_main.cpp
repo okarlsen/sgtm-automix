@@ -8,6 +8,7 @@
 // With no arguments it finds both bundles in the same build directory as itself.
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include "InstanceLink.h"
 #include <juce_events/juce_events.h>
 
 #include <cmath>
@@ -18,9 +19,19 @@
  #include <sys/mman.h>
 #endif
 
+#if JUCE_MAC
+ #include <CoreFoundation/CoreFoundation.h>
+#endif
+
 namespace
 {
 int failures = 0;
+
+std::string linkNameForTest()
+{
+    const char* name = std::getenv ("SGTM_AUTOMIX_LINK_NAME");
+    return name != nullptr ? name : "";
+}
 
 void check (bool ok, const juce::String& what)
 {
@@ -186,6 +197,63 @@ void testLinked (juce::AudioPluginFormatManager& formats, const juce::String& pa
         check (maxDiff (outA, input) < 1.0e-4f, "bypassed channel passes audio at unity");
         check (maxDiff (outB, input) < 1.0e-3f, "the other channel, now alone, is at unity");
         bypass->setValueNotifyingHost (0.0f);
+    }
+
+    // Track names reach the list in any order of name, layout change and prepare, and a name the
+    // user typed beats the host's.
+    {
+        sgtm::InstanceLink reader (linkNameForTest());
+        reader.join();
+        auto pump = []
+        {
+           #if JUCE_MAC
+            for (int i = 0; i < 5; ++i)
+                CFRunLoopRunInMode (kCFRunLoopDefaultMode, 0.02, false);
+           #else
+            juce::Thread::sleep (100);
+           #endif
+        };
+        auto labels = [&reader]
+        {
+            juce::StringArray names;
+            for (const auto& c : reader.getChannels())
+                names.add (c.label);
+            return names;
+        };
+        auto run = [&] (juce::AudioPluginInstance& p)
+        {
+            juce::AudioBuffer<float> buf (p.getTotalNumInputChannels(), block);
+            buf.clear();
+            p.processBlock (buf, midi);
+        };
+
+        juce::AudioPluginInstance::TrackProperties props;
+        props.name = juce::String ("Vocal L");
+        a->updateTrackProperties (props);
+        pump();
+        run (*a);
+        check (labels().contains ("Vocal L"), "host track name appears in the list");
+
+        // Mono to stereo after the name: the name stays.
+        a->releaseResources();
+        juce::AudioProcessor::BusesLayout stereo;
+        stereo.inputBuses.add (juce::AudioChannelSet::stereo());
+        stereo.outputBuses.add (juce::AudioChannelSet::stereo());
+        a->setBusesLayout (stereo);
+        a->prepareToPlay (sr, block);
+        pump();
+        run (*a);
+        check (labels().contains ("Vocal L"), "the name survives a layout change to stereo");
+
+        // Layout change first, then the name.
+        b->releaseResources();
+        b->setBusesLayout (stereo);
+        b->prepareToPlay (sr, block);
+        props.name = juce::String ("Choir");
+        b->updateTrackProperties (props);
+        pump();
+        run (*b);
+        check (labels().contains ("Choir"), "a name sent after the layout change appears");
     }
 
     a->releaseResources();

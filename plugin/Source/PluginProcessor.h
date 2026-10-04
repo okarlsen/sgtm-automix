@@ -73,7 +73,7 @@ public:
 
     // Channel name shown on every linked instance: the user's name if set, else the host's track
     // name. Message thread.
-    juce::String getChannelName() const { return userLabel; }
+    juce::String getChannelName() const;
     void setChannelName (const juce::String& name);
     juce::String getDisplayedLabel() const;
 
@@ -108,7 +108,7 @@ private:
     int64_t samplePosition = 0;
 
     juce::String userLabel;
-    juce::CriticalSection trackNameLock;
+    juce::CriticalSection trackNameLock; // guards userLabel and trackName
     juce::String trackName;
 
     Meters meters;

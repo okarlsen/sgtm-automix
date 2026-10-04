@@ -76,7 +76,7 @@ void AutomixProcessor::prepareToPlay (double sampleRate, int)
     link.prepare (sampleRate);
     link.setGroup (getGroup(), true);
     link.join();
-    publishLabel();
+    triggerAsyncUpdate(); // republish the name from the message thread (hosts may call this from others)
 }
 
 void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -147,7 +147,7 @@ void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 void AutomixProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = parameters.copyState();
-    state.setProperty ("channelName", userLabel, nullptr);
+    state.setProperty ("channelName", getChannelName(), nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -158,7 +158,10 @@ void AutomixProcessor::setStateInformation (const void* data, int sizeInBytes)
         if (xml->hasTagName (parameters.state.getType()))
         {
             auto state = juce::ValueTree::fromXml (*xml);
-            userLabel = state.getProperty ("channelName").toString();
+            {
+                const juce::ScopedLock lock (trackNameLock);
+                userLabel = state.getProperty ("channelName").toString();
+            }
             state.removeProperty ("channelName", nullptr);
             parameters.replaceState (state);
             triggerAsyncUpdate();
@@ -177,16 +180,24 @@ void AutomixProcessor::updateTrackProperties (const TrackProperties& properties)
 
 void AutomixProcessor::setChannelName (const juce::String& name)
 {
-    userLabel = name.trim();
+    {
+        const juce::ScopedLock lock (trackNameLock);
+        userLabel = name.trim();
+    }
     publishLabel();
 }
 
+juce::String AutomixProcessor::getChannelName() const
+{
+    const juce::ScopedLock lock (trackNameLock);
+    return userLabel;
+}
+
+// The user's name wins over the host's track name; either can arrive in any order.
 juce::String AutomixProcessor::getDisplayedLabel() const
 {
-    if (userLabel.isNotEmpty())
-        return userLabel;
     const juce::ScopedLock lock (trackNameLock);
-    return trackName;
+    return userLabel.isNotEmpty() ? userLabel : trackName;
 }
 
 void AutomixProcessor::handleAsyncUpdate() { publishLabel(); }
