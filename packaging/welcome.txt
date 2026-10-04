@@ -1,0 +1,33 @@
+SGTM Automix
+
+SGTM Automix is a gain-sharing automixer for speech. Put one instance on
+every talker's track; the instances find each other and keep the total gain
+at one open microphone, so whoever is speaking comes up and the others duck.
+
+This installer places two plugins in your personal plug-in folders:
+
+  * Audio Unit (AU)   ->  ~/Library/Audio/Plug-Ins/Components/SGTM Automix.component
+  * VST3              ->  ~/Library/Audio/Plug-Ins/VST3/SGTM Automix.vst3
+
+Both install into your own home folder, so no administrator password is
+needed and nothing is changed system-wide. You can deselect either format on
+the next screen if you only need one.
+
+Requirements: macOS 13 or newer, on Apple Silicon or Intel.
+
+
+Signing
+
+This installer is signed with an Apple Developer ID (Sounds Good To Me AS)
+and notarized by Apple, as are both plugins it installs. Nothing needs to be
+approved in System Settings and there is no Terminal step.
+
+
+After installing
+
+Restart your DAW, or trigger a plugin rescan, so it picks up the new plugin.
+Insert SGTM Automix on each speech track, after EQ and before any
+compressor.
+
+SGTM Automix is free software under the AGPLv3, provided as-is with no
+warranty of any kind. Source: https://github.com/okarlsen/sgtm-automix

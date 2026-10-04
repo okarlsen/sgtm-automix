@@ -1,0 +1,14 @@
+# Build artifacts (regenerable via CMake / the packaging scripts)
+plugin/build/
+plugin/build-*/
+packaging/build/
+
+# JUCE is a git submodule (see .gitmodules) -- tracked via gitlink, not
+# ignored. A public release needs it buildable from a fresh clone.
+
+# Host probe logs and test recordings: large, generated, not source.
+*.csv
+*.wav
+temp/
+
+.DS_Store
