@@ -44,6 +44,16 @@ private:
     bool allOn = true;
 };
 
+// Group selector menu: each entry (A, B, C) drawn in its group's colour.
+class GroupLookAndFeel final : public juce::LookAndFeel_V4
+{
+public:
+    void drawPopupMenuItem (juce::Graphics&, const juce::Rectangle<int>& area, bool isSeparator, bool isActive,
+                            bool isHighlighted, bool isTicked, bool hasSubMenu, const juce::String& text,
+                            const juce::String& shortcutKeyText, const juce::Drawable* icon,
+                            const juce::Colour* textColour) override;
+};
+
 class AutomixEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -55,6 +65,7 @@ public:
 
 private:
     void timerCallback() override;
+    void updateGroupColours();
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
 
@@ -72,7 +83,9 @@ private:
     juce::ToggleButton bypassButton { "Bypass" };
     juce::AudioProcessorValueTreeState::ButtonAttachment bypassAttachment;
     juce::ToggleButton allOnButton { "Automix on (all channels)" };
+    GroupLookAndFeel groupLookAndFeel;
     juce::ComboBox groupBox;
+    int shownGroup = -1;
     juce::Label groupLabel;
     juce::AudioProcessorValueTreeState::ComboBoxAttachment groupAttachment;
 

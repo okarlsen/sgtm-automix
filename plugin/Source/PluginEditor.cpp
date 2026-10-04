@@ -111,6 +111,18 @@ void LevelMeter::paint (juce::Graphics& g)
 }
 
 //==================================================================================================
+void GroupLookAndFeel::drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& area, bool isSeparator,
+                                          bool isActive, bool isHighlighted, bool isTicked, bool hasSubMenu,
+                                          const juce::String& text, const juce::String& shortcutKeyText,
+                                          const juce::Drawable* icon, const juce::Colour* textColour)
+{
+    const int group = text.length() == 1 ? (int) (text[0] - 'A') : -1;
+    const auto colour = group >= 0 && group < 3 ? groupColour (group) : juce::Colours::white;
+    LookAndFeel_V4::drawPopupMenuItem (g, area, isSeparator, isActive, isHighlighted, isTicked, hasSubMenu, text,
+                                       shortcutKeyText, icon, textColour != nullptr ? textColour : &colour);
+}
+
+//==================================================================================================
 void ChannelList::setChannels (std::vector<LinkedChannelInfo> newChannels, bool automixOn)
 {
     auto same = [] (const LinkedChannelInfo& a, const LinkedChannelInfo& b)
@@ -288,6 +300,8 @@ AutomixEditor::AutomixEditor (AutomixProcessor& p)
     groupLabel.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (groupLabel);
     groupBox.setTooltip ("Gain is shared only with channels in the same group");
+    groupBox.setLookAndFeel (&groupLookAndFeel);
+    updateGroupColours();
     addAndMakeVisible (groupBox);
 
     allOnButton.setTooltip ("Turns the automix on or off on every linked channel at once, for A/B comparison");
@@ -310,6 +324,7 @@ AutomixEditor::AutomixEditor (AutomixProcessor& p)
 AutomixEditor::~AutomixEditor()
 {
     stopTimer();
+    groupBox.setLookAndFeel (nullptr);
 }
 
 void AutomixEditor::paint (juce::Graphics& g)
@@ -372,8 +387,25 @@ void AutomixEditor::resized()
     }
 }
 
+// The selector takes the chosen group's colour: tinted background, coloured text and outline.
+void AutomixEditor::updateGroupColours()
+{
+    const int group = processor.getGroup();
+    if (group == shownGroup)
+        return;
+    shownGroup = group;
+
+    const auto colour = groupColour (group);
+    groupBox.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff202124).interpolatedWith (colour, 0.3f));
+    groupBox.setColour (juce::ComboBox::textColourId, colour.brighter (0.4f));
+    groupBox.setColour (juce::ComboBox::outlineColourId, colour);
+    groupBox.setColour (juce::ComboBox::arrowColourId, colour.brighter (0.4f));
+    groupLabel.setColour (juce::Label::textColourId, colour.brighter (0.4f));
+}
+
 void AutomixEditor::timerCallback()
 {
+    updateGroupColours();
     const auto& m = processor.getMeters();
     const bool stereo = m.numChannels.load (std::memory_order_relaxed) >= 2;
     inputMeter.setLevelsDb (m.inputLeftDb.load (std::memory_order_relaxed),
