@@ -275,6 +275,15 @@ void testLinked (juce::AudioPluginFormatManager& formats, const juce::String& pa
         }
         check (bIsMono && aIsStereo, "mono and stereo layouts show correctly before playback starts");
 
+        // And back from mono to stereo, again with no audio running.
+        b->releaseResources();
+        b->setBusesLayout (stereo);
+        b->prepareToPlay (sr, block);
+        bool bIsStereo = false;
+        for (const auto& c : reader.getChannels())
+            bIsStereo = bIsStereo || (c.label != "Vocal L" && ! c.isSelf && c.stereo);
+        check (bIsStereo && b->getTotalNumOutputChannels() == 2, "switching a track from mono to stereo shows stereo at once");
+
         // Layout change first, then the name.
         b->releaseResources();
         b->setBusesLayout (stereo);

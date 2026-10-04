@@ -10,7 +10,7 @@ namespace sgtm
 constexpr float levelRangeDb = 80.0f;
 
 // Vertical bar meter with a decaying display value, optionally with dB ticks and dimmed.
-class LevelMeter final : public juce::Component
+class LevelMeter final : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     LevelMeter (juce::String labelText, float minDb, float maxDb, juce::Colour barColour,
@@ -96,6 +96,10 @@ private:
     GroupLookAndFeel groupLookAndFeel;
     juce::ComboBox groupBox;
     int shownGroup = -1;
+    int shownInputs = -1, shownOutputs = -1;
+
+    // Shows the tooltips set on the controls (plug-in windows have none of their own).
+    juce::TooltipWindow tooltipWindow { this, 600 };
     juce::Label groupLabel;
     juce::AudioProcessorValueTreeState::ComboBoxAttachment groupAttachment;
 

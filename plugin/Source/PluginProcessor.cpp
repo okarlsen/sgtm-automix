@@ -176,7 +176,7 @@ void AutomixProcessor::setStateInformation (const void* data, int sizeInBytes)
 // meters and the channel list show mono or stereo correctly from the moment a session opens.
 void AutomixProcessor::numChannelsChanged()
 {
-    const int channels = std::max (1, getMainBusNumInputChannels());
+    const int channels = std::max (1, getTotalNumOutputChannels()); // as processBlock counts them
     meters.numChannels.store (channels, std::memory_order_relaxed);
     link.setInputSides (-120.0f, -120.0f, channels);
 }

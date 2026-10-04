@@ -569,7 +569,19 @@ void AutomixEditor::timerCallback()
 {
     updateGroupColours();
     const auto& m = processor.getMeters();
-    const bool stereo = m.numChannels.load (std::memory_order_relaxed) >= 2;
+    // Mono or stereo straight from the plug-in's current layout, so the meters follow every
+    // layout change at once, with or without audio running.
+    const int inputs = processor.getTotalNumInputChannels(), outputs = processor.getTotalNumOutputChannels();
+    const bool stereo = outputs >= 2;
+    if (inputs != shownInputs || outputs != shownOutputs)
+    {
+        shownInputs = inputs;
+        shownOutputs = outputs;
+        const auto layout = juce::String (stereo ? "stereo" : "mono") + " (" + juce::String (inputs) + " in, "
+                            + juce::String (outputs) + " out)";
+        inputMeter.setTooltip ("Track layout: " + layout);
+        outputMeter.setTooltip ("Track layout: " + layout);
+    }
     inputMeter.setLevelsDb (m.inputLeftDb.load (std::memory_order_relaxed),
                             m.inputRightDb.load (std::memory_order_relaxed), stereo);
     gainMeter.setLevelDb (m.automixGainDb.load (std::memory_order_relaxed));
