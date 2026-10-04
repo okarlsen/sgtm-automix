@@ -31,6 +31,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -160,11 +161,21 @@ public:
     static std::string defaultName()
     {
 #if SGTM_LINK_POSIX
-        return "/sgtm-automix-v" + std::to_string (linkdetail::layoutVersion) + "-"
-               + std::to_string (sizeof (linkdetail::Shared)) + "-" + std::to_string ((unsigned long) getuid());
+        return nameFor ((unsigned long) getuid());
 #else
         return {};
 #endif
+    }
+
+    // macOS allows shared-memory names of at most 31 characters, leading slash included.
+    static constexpr size_t maxNameLength = 31;
+
+    // "/sgtmam<version>-<size in hex>-<uid>": at most 26 characters even for a 10-digit user id.
+    static std::string nameFor (unsigned long uid)
+    {
+        char size[17];
+        std::snprintf (size, sizeof (size), "%zx", sizeof (linkdetail::Shared));
+        return "/sgtmam" + std::to_string (linkdetail::layoutVersion) + "-" + size + "-" + std::to_string (uid);
     }
 
     // Removes a named block (tests only; a live block is left in place).
@@ -694,6 +705,8 @@ private:
 
         if (name.empty())
             return fail ("no shared block name", 0);
+        if (name.size() > maxNameLength)
+            return fail ("shared block name too long", 0);
 
         const int fd = shm_open (name.c_str(), O_RDWR | O_CREAT, 0600);
         if (fd < 0)

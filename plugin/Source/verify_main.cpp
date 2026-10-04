@@ -293,8 +293,17 @@ void linkTests()
     {
         // A block left behind by a build with another layout must not stop this build linking.
         const auto name = sgtm::InstanceLink::defaultName();
-        check (name.find (std::to_string (sizeof (sgtm::linkdetail::Shared))) != std::string::npos && name.size() <= 31,
+        char sizeHex[17];
+        std::snprintf (sizeHex, sizeof (sizeHex), "%zx", sizeof (sgtm::linkdetail::Shared));
+        check (name.find (sizeHex) != std::string::npos
+                   && name.find ("sgtmam" + std::to_string (sgtm::linkdetail::layoutVersion)) != std::string::npos,
                "the shared block's name carries the layout, so older builds' blocks are never reused");
+        const auto longest = sgtm::InstanceLink::nameFor (4294967295ul);
+        check (longest.size() <= sgtm::InstanceLink::maxNameLength,
+               "the name fits the 31-character limit even for the longest user id", (double) longest.size(), 31.0);
+        sgtm::InstanceLink tooLong ("/sgtm-a-name-that-is-far-too-long-for-macos");
+        check (! tooLong.isAvailable() && tooLong.getUnavailableReason() == "shared block name too long",
+               "a name over the limit is refused with a reason shown in the window");
 
         LinkTestName shm;
         {
