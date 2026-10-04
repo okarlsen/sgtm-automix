@@ -81,6 +81,9 @@ juce_add_plugin(SGTMAutomix
     VST3_CATEGORIES Fx Dynamics
     AU_MAIN_TYPE kAudioUnitType_Effect
     AAX_CATEGORY AAX_ePlugInCategory_Dynamics
+    # AAX: one instance per track with one gain for both sides. In multi-mono Pro Tools would give
+    # each side of a stereo track its own instance, and the two sides would get different gains.
+    DISABLE_AAX_MULTI_MONO TRUE
     COPY_PLUGIN_AFTER_BUILD TRUE
 )
 
@@ -95,6 +98,13 @@ target_compile_definitions(SGTMAutomix
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
+        # AAX only (ignored by AU and VST3). Untested until there is a Pro Tools build.
+        # No AudioSuite: it processes one clip on its own, with no other channels to share with.
+        # Bounce Mix renders the session normally and does not use AudioSuite.
+        JucePlugin_AAXDisableAudioSuite=1
+        # Always process (AAX_eProperty_Constraint_AlwaysProcess): Pro Tools must not stop running
+        # the plug-in on a track that has been silent, or the others would wait for it in a bounce.
+        JucePlugin_AAXDisableDynamicProcessing=1
 )
 
 target_link_libraries(SGTMAutomix
@@ -149,10 +159,19 @@ if(SGTM_BUILD_PROBE)
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# Standalone harness that checks the automix engine directly (gain shares for
-# equal and unequal channels, pass-through, block-size independence). No JUCE.
+# Standalone harness that checks the automix engine and the instance link
+# directly (gain shares for equal and unequal channels, pass-through,
+# block-size independence, several linked instances live and offline). No JUCE.
 
 add_executable(SGTMAutomixVerify Source/verify_main.cpp)
+
+find_package(Threads REQUIRED)
+target_link_libraries(SGTMAutomixVerify PRIVATE Threads::Threads)
+if(UNIX AND NOT APPLE)
+    # shm_open lives in librt on older glibc.
+    target_link_libraries(SGTMAutomixVerify PRIVATE rt)
+    target_link_libraries(SGTMAutomix PRIVATE rt)
+endif()
 
 # Loads the built VST3 bundles the way a host does and checks latency,
 # pass-through, parameters, state, editor and probe logging.

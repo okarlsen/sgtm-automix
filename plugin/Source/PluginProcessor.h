@@ -2,16 +2,18 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "AutomixEngine.h"
+#include "InstanceLink.h"
 
 #include <atomic>
 
 namespace sgtm
 {
 
-class AutomixProcessor final : public juce::AudioProcessor
+class AutomixProcessor final : public juce::AudioProcessor, private juce::AsyncUpdater
 {
 public:
     AutomixProcessor();
+    ~AutomixProcessor() override;
 
     void prepareToPlay (double sampleRate, int maximumExpectedSamplesPerBlock) override;
     void releaseResources() override {}
@@ -26,7 +28,10 @@ public:
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+    // Hosts that stop running a plug-in once its input goes silent (Logic, after a region ends)
+    // keep running it this long, so the channel's level decays and it leaves the sharing on its
+    // own instead of holding the others down with its last level. Matches the no-signal hold.
+    double getTailLengthSeconds() const override { return 1.0; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -36,8 +41,13 @@ public:
 
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
+    void updateTrackProperties (const TrackProperties& properties) override;
+    void numChannelsChanged() override;
 
     juce::AudioProcessorValueTreeState& getParameters() noexcept { return parameters; }
+
+    // The host's bypass maps to this channel's Bypass: unity gain, out of the group.
+    juce::AudioProcessorParameter* getBypassParameter() const override;
 
     // Meter values, written by the audio thread, read by the editor.
     struct Meters
@@ -45,11 +55,47 @@ public:
         std::atomic<float> inputDb { -120.0f };
         std::atomic<float> automixGainDb { 0.0f };
         std::atomic<float> outputDb { -120.0f };
+        std::atomic<float> inputLeftDb { -120.0f }, inputRightDb { -120.0f };
+        std::atomic<float> outputLeftDb { -120.0f }, outputRightDb { -120.0f };
+        std::atomic<int> numChannels { 2 };
+        std::atomic<int> numPeers { 0 };
     };
     const Meters& getMeters() const noexcept { return meters; }
 
+    // Instance link, for the editor (message thread).
+    bool isLinkAvailable() const noexcept { return link.isAvailable() && link.isJoined(); }
+    juce::String getLinkUnavailableReason() const
+    {
+        return link.isAvailable() ? juce::String ("all 64 channel slots in use") : juce::String (link.getUnavailableReason());
+    }
+
+    // The all-channels switch, shared by every linked instance (not saved with the session).
+    bool isAutomixOnForAll() const noexcept { return link.isAutomixOn(); }
+    bool isBypassed() const noexcept { return bypass->load() >= 0.5f; }
+    void setAutomixOnForAll (bool on) noexcept { link.setAutomixOn (on); }
+    std::vector<LinkedChannelInfo> getLinkedChannels() const { return link.getChannels(); }
+
+    // Channel name shown on every linked instance: the user's name if set, else the host's track
+    // name. Message thread.
+    juce::String getChannelName() const;
+
+    // The editor's last size, kept while the plug-in stays loaded (not saved with the session).
+    juce::Point<int> getEditorSize() const noexcept { return editorSize; }
+    void setEditorSize (juce::Point<int> size) noexcept { editorSize = size; }
+    void setChannelName (const juce::String& name);
+    juce::String getDisplayedLabel() const;
+
     static constexpr const char* weightId = "weight";
     static constexpr const char* outputGainId = "outputGain";
+    static constexpr const char* bypassId = "bypass";
+    static constexpr const char* groupId = "group";
+
+    static juce::String groupName (int group) { return juce::String::charToString ((juce::juce_wchar) ('A' + group)); }
+    int getGroup() const noexcept { return (int) groupParam->load(); }
+
+    // Shows this channel's Group setting in every channel list, also while the host is not
+    // processing the track. Any thread.
+    void publishShownGroup() noexcept { link.setShownGroup (getGroup()); }
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -57,13 +103,31 @@ private:
     juce::AudioProcessorValueTreeState parameters;
     std::atomic<float>* weightDb = nullptr;
     std::atomic<float>* outputGainDb = nullptr;
+    std::atomic<float>* bypass = nullptr;
+    std::atomic<float>* groupParam = nullptr;
+
+    static std::string linkName();
+    void handleAsyncUpdate() override;
+    void publishLabel();
 
     AutomixChannel engine;
+    InstanceLink link;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> outputGain;
 
-    // Absolute position of the next block. Thread 3 replaces this with the host timeline
-    // position so all instances agree on hop boundaries; for now each instance counts its own.
+    // Absolute position of the next block. Offline, the host timeline position is used when the
+    // host gives one, so all instances agree on hop boundaries; live, each instance counts its own
+    // (live peers are matched by newest value, not by position).
     int64_t samplePosition = 0;
+
+    // Whether the previous block was rendered offline. Entering or leaving a bounce starts the
+    // engine afresh, so every host starts a bounce the same way (Logic re-prepares the plug-in
+    // for it, Pro Tools does not).
+    bool wasOffline = false;
+
+    juce::String userLabel;
+    juce::Point<int> editorSize { 0, 0 };
+    juce::CriticalSection trackNameLock; // guards userLabel and trackName
+    juce::String trackName;
 
     Meters meters;
 

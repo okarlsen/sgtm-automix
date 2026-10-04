@@ -7,16 +7,15 @@ instantly and the others duck, with no thresholds to set and no added
 latency.
 
 It runs live (MainStage, Logic, Cubase) with 0 samples of reported latency,
-and gives the same result in faster-than-real-time offline bounces (Pro
-Tools, Cubase, Logic).
+and is designed to give the same result in faster-than-real-time offline
+bounces of the whole mix as in playback.
 
 Built by SGTM on top of [JUCE](https://juce.com).
 
 ## Status
 
-Early development (0.1.0). The plugin builds and passes audio, and the
-automix engine is in place, but instances do not see each other yet, so each
-one runs solo at 0 dB automix gain. Not released.
+Early development (0.1.0). Instances on the same computer find each other
+and share gain, live and in offline bounces. Not released.
 
 ## Requirements
 
@@ -28,12 +27,54 @@ one runs solo at 0 dB automix gain. Not released.
 
 Insert SGTM Automix on each speech track, after EQ and before any
 compressor (compression flattens the level differences it relies on).
+It is meant to be inserted post-fader, and works best with one microphone
+per talker.
 
 - **Weight** sets a channel's priority. It changes how loud the channel looks
   to the automixer, not its audio level. Balance the weights so all GAIN
   meters read about the same when nobody is talking.
 - **Output** is a plain output trim.
-- Meters: **IN** input level, **GAIN** the automix gain, **OUT** output level.
+- **Bypass** passes the channel's audio through unchanged (Output trim
+  included) and takes it out of the gain sharing, so the other channels share
+  as if it were not there. It fades over 20 ms and follows the host's own
+  bypass button.
+- The automixer judges levels in the voice band only (150 Hz to 5 kHz), so
+  stage rumble, handling noise and hiss don't take a share. The audio itself
+  is not filtered.
+- **No signal:** a channel whose level stays below −81 dBFS for a second
+  (fader down, muted, nothing connected) drops out of the sharing and sits at
+  unity, so it doesn't take a share from the others. It rejoins as soon as
+  its level reaches −75 dBFS, fading in over 20 ms. An open mic's room tone
+  sits above that, so quiet open mics still count. The channel list marks
+  these channels NO SIGNAL.
+- **Group** (A, B or C) picks which automix the channel belongs to. Gain is
+  shared only among channels in the same group, so up to three automixes
+  can run at once, for example one per panel. Changing it fades over 20 ms.
+- **Automix on (all channels)** switches the automix off or on for every
+  channel at once, for A/B comparison. Switching it on any instance switches
+  them all. It is not saved with a session, and turns itself back on when a
+  new session starts.
+- Meters: **IN** input level and **OUT** output level (left and right on a
+  stereo track), **GAIN** the gain the channel lets through. One gain applies
+  to both sides of a stereo track, set from the level of both sides together,
+  so the stereo image does not shift.
+- The channel list shows every running channel, sorted by group and then
+  by name: its group,
+  name, input level, gain (full at 0 dB, empty at −15 dB) and weight, with
+  this instance highlighted. Click the name
+  field to name the channel; left empty, it uses the host's track name where
+  the host provides one.
+- The window can be resized from its bottom-right corner; the channel list
+  takes the extra height.
+
+All instances on the computer link up, in any host and any number of host
+processes (up to 64 channels). Run one host session at a time while using
+it: two hosts open at once would link with each other.
+
+Bounce or export the whole mix. Bouncing in place, exporting or freezing a
+single track renders that track without the other channels, so the automix
+is not applied to it. Offline bounces are calculated sample-exactly across
+all channels when the host renders the tracks together.
 
 ## Building from source
 
@@ -43,8 +84,12 @@ See [BUILDING.md](BUILDING.md).
 
 - VST3 builds on Linux; the engine tests, the VST3 smoke test and pluginval
   (strictness 10) pass there.
-- Not yet verified: the macOS build (universal binary), AU validation, AAX
-  in Pro Tools Developer, and the signing and packaging scripts.
+- macOS universal build: the engine and instance-link tests, the VST3
+  smoke test and AU validation (`auval`) pass.
+- Used live in Logic and LiveProfessor on macOS (AU), with linked
+  instances, groups and the channel list.
+- Not yet verified: offline bounces in real hosts, AAX in Pro Tools
+  Developer, and the signing and packaging scripts.
 
 ## License
 

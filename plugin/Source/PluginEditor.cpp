@@ -5,22 +5,63 @@ namespace sgtm
 {
 
 //==================================================================================================
-LevelMeter::LevelMeter (juce::String labelText, float min, float max, juce::Colour barColour)
-    : label (std::move (labelText)), minDb (min), maxDb (max), colour (barColour), displayDb (min)
+namespace
+{
+// Gain scale shared by the GAIN meter and the channel list: the gain a channel lets through, full
+// at 0 dB and empty at -15 dB, linear in dB. A channel talking alone reads full; two equal channels
+// read -3 dB; ten equal idle channels read -10 dB, two thirds down.
+constexpr float gainRangeDb = 15.0f;
+constexpr float gainTicksDb[] = { 0.0f, -3.0f, -6.0f, -9.0f, -12.0f, -15.0f };
+
+juce::Colour groupColour (int group)
+{
+    const juce::Colour colours[] = { juce::Colour (0xff4fc3f7), juce::Colour (0xffba68c8), juce::Colour (0xff81c784) };
+    return colours[juce::jlimit (0, 2, group)];
+}
+
+// The combo box needs its items before the parameter attachment is made.
+juce::ComboBox& withGroupItems (juce::ComboBox& box)
+{
+    box.addItemList ({ "A", "B", "C" }, 1);
+    return box;
+}
+
+float gainProportion (float gainDb) { return juce::jlimit (0.0f, 1.0f, (gainDb + gainRangeDb) / gainRangeDb); }
+} // namespace
+
+LevelMeter::LevelMeter (juce::String labelText, float min, float max, juce::Colour barColour, bool showTicks)
+    : label (std::move (labelText)), minDb (min), maxDb (max), colour (barColour), ticks (showTicks), displayDb { min, min }
 {
 }
 
-void LevelMeter::setLevelDb (float db)
+void LevelMeter::setDimmed (bool shouldBeDimmed)
 {
-    // Instant rise, ~20 dB/s fall at 30 Hz refresh.
-    db = juce::jlimit (minDb, maxDb, db);
-    const float fallen = displayDb - 0.7f;
-    const float next = std::max (db, fallen);
-    if (! juce::approximatelyEqual (next, displayDb))
+    if (dimmed != shouldBeDimmed)
     {
-        displayDb = next;
+        dimmed = shouldBeDimmed;
         repaint();
     }
+}
+
+void LevelMeter::setLevelDb (float db) { setLevelsDb (db, db, false); }
+
+void LevelMeter::setLevelsDb (float leftDb, float rightDb, bool stereo)
+{
+    // Instant rise, ~20 dB/s fall at 30 Hz refresh.
+    bool changed = stereo != isStereo;
+    isStereo = stereo;
+    const float dbs[2] = { leftDb, rightDb };
+    for (int i = 0; i < 2; ++i)
+    {
+        const float next = std::max (juce::jlimit (minDb, maxDb, dbs[i]), displayDb[i] - 0.7f);
+        if (! juce::approximatelyEqual (next, displayDb[i]))
+        {
+            displayDb[i] = next;
+            changed = true;
+        }
+    }
+    if (changed)
+        repaint();
 }
 
 void LevelMeter::paint (juce::Graphics& g)
@@ -29,13 +70,40 @@ void LevelMeter::paint (juce::Graphics& g)
     auto labelArea = area.removeFromBottom (18);
     auto bar = area.reduced (4, 2).toFloat();
 
-    g.setColour (juce::Colour (0xff202124));
-    g.fillRoundedRectangle (bar, 3.0f);
+    auto drawBar = [&] (juce::Rectangle<float> r, float db)
+    {
+        g.setColour (juce::Colour (0xff202124));
+        g.fillRoundedRectangle (r, 3.0f);
+        const float proportion = (db - minDb) / (maxDb - minDb);
+        g.setColour (dimmed ? colour.withAlpha (0.3f) : colour);
+        g.fillRoundedRectangle (r.withTop (r.getBottom() - r.getHeight() * proportion), 3.0f);
+    };
 
-    const float proportion = (displayDb - minDb) / (maxDb - minDb);
-    auto filled = bar.withTop (bar.getBottom() - bar.getHeight() * proportion);
-    g.setColour (colour);
-    g.fillRoundedRectangle (filled, 3.0f);
+    if (isStereo)
+    {
+        const float half = (bar.getWidth() - 3.0f) / 2.0f;
+        drawBar (bar.withWidth (half), displayDb[0]);
+        drawBar (bar.withTrimmedLeft (half + 3.0f), displayDb[1]);
+    }
+    else
+    {
+        drawBar (bar, displayDb[0]);
+    }
+
+    if (ticks)
+    {
+        g.setFont (9.0f);
+        for (float tick : gainTicksDb)
+        {
+            const float y = bar.getY() + bar.getHeight() * (maxDb - tick) / (maxDb - minDb);
+            g.setColour (juce::Colours::white.withAlpha (0.35f));
+            g.drawHorizontalLine ((int) std::round (y), bar.getX(), bar.getX() + 6.0f);
+            g.setColour (juce::Colours::lightgrey);
+            auto text = juce::Rectangle<float> (bar.getX() + 7.0f, y - 6.0f, bar.getWidth() - 8.0f, 12.0f)
+                            .constrainedWithin (bar);
+            g.drawText (juce::String ((int) tick), text, juce::Justification::centredLeft);
+        }
+    }
 
     g.setColour (juce::Colours::lightgrey);
     g.setFont (12.0f);
@@ -43,11 +111,154 @@ void LevelMeter::paint (juce::Graphics& g)
 }
 
 //==================================================================================================
+void GroupLookAndFeel::drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& area, bool isSeparator,
+                                          bool isActive, bool isHighlighted, bool isTicked, bool hasSubMenu,
+                                          const juce::String& text, const juce::String& shortcutKeyText,
+                                          const juce::Drawable* icon, const juce::Colour* textColour)
+{
+    const int group = text.length() == 1 ? (int) (text[0] - 'A') : -1;
+    const auto colour = group >= 0 && group < 3 ? groupColour (group) : juce::Colours::white;
+    LookAndFeel_V4::drawPopupMenuItem (g, area, isSeparator, isActive, isHighlighted, isTicked, hasSubMenu, text,
+                                       shortcutKeyText, icon, textColour != nullptr ? textColour : &colour);
+}
+
+//==================================================================================================
+void ChannelList::setChannels (std::vector<LinkedChannelInfo> newChannels, bool automixOn)
+{
+    auto same = [] (const LinkedChannelInfo& a, const LinkedChannelInfo& b)
+    {
+        // Compare at display resolution so an idle list does not repaint.
+        auto q = [] (float db) { return (int) std::lround (db * 2.0f); };
+        return a.slot == b.slot && a.group == b.group && a.isSelf == b.isSelf && a.label == b.label && q (a.inputDb) == q (b.inputDb)
+               && a.stereo == b.stereo && q (a.inputLeftDb) == q (b.inputLeftDb) && q (a.inputRightDb) == q (b.inputRightDb)
+               && q (a.gainDb) == q (b.gainDb) && q (a.weightDb) == q (b.weightDb) && a.bypassed == b.bypassed && a.present == b.present && a.idle == b.idle;
+    };
+
+    if (automixOn == allOn && newChannels.size() == channels.size()
+        && std::equal (newChannels.begin(), newChannels.end(), channels.begin(), same))
+        return;
+
+    channels = std::move (newChannels);
+    allOn = automixOn;
+    setSize (getWidth(), headerHeight + std::max (1, (int) channels.size()) * rowHeight);
+    repaint();
+}
+
+void ChannelList::paint (juce::Graphics& g)
+{
+    auto drawBar = [&g] (juce::Rectangle<float> r, float proportion, juce::Colour colour)
+    {
+        g.setColour (juce::Colour (0xff202124));
+        g.fillRoundedRectangle (r, 2.0f);
+        g.setColour (colour);
+        g.fillRoundedRectangle (r.withWidth (r.getWidth() * juce::jlimit (0.0f, 1.0f, proportion)), 2.0f);
+    };
+
+    // Column headings, laid out like the rows below.
+    {
+        auto row = juce::Rectangle<int> (0, 0, getWidth(), headerHeight).reduced (6, 0);
+        g.setColour (juce::Colours::grey);
+        g.setFont (11.0f);
+        g.drawText ("Grp", row.removeFromLeft (26), juce::Justification::centredLeft);
+        g.drawText ("Channel", row.removeFromLeft (100), juce::Justification::centredLeft);
+        g.drawText ("Weight", row.removeFromRight (64), juce::Justification::centredRight);
+        g.drawText ("Gain dB", row.removeFromRight (56), juce::Justification::centredRight);
+        row.removeFromRight (6);
+        g.drawText ("Input", row.removeFromLeft (row.getWidth() / 2), juce::Justification::centredLeft);
+        g.drawText ("Gain", row.withTrimmedLeft (4), juce::Justification::centredLeft);
+    }
+
+    if (channels.empty())
+    {
+        g.setColour (juce::Colours::grey);
+        g.setFont (12.0f);
+        g.drawText ("No channels running", getLocalBounds().withTrimmedTop (headerHeight), juce::Justification::centred);
+        return;
+    }
+
+    int y = headerHeight;
+    int previousGroup = -1;
+    for (const auto& c : channels)
+    {
+        if (previousGroup >= 0 && c.group != previousGroup)
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.15f));
+            g.drawHorizontalLine (y, 0.0f, (float) getWidth());
+        }
+        previousGroup = c.group;
+
+        auto row = juce::Rectangle<int> (0, y, getWidth(), rowHeight).reduced (0, 2);
+        y += rowHeight;
+
+        if (c.isSelf)
+        {
+            g.setColour (juce::Colour (0xff3d4048));
+            g.fillRoundedRectangle (row.toFloat(), 3.0f);
+        }
+
+        row.reduce (6, 0);
+        g.setColour (c.isSelf ? juce::Colours::white : juce::Colours::lightgrey);
+        g.setFont (juce::FontOptions (12.0f, c.isSelf ? juce::Font::bold : juce::Font::plain));
+        g.setColour (groupColour (c.group));
+        g.drawText (AutomixProcessor::groupName (c.group), row.removeFromLeft (26), juce::Justification::centredLeft);
+        g.setColour (c.isSelf ? juce::Colours::white : juce::Colours::lightgrey);
+        g.drawText (c.label, row.removeFromLeft (100), juce::Justification::centredLeft, true);
+
+        if (c.idle)
+        {
+            g.setColour (juce::Colours::grey);
+            g.drawText ("idle: host is not processing this track", row, juce::Justification::centredLeft, true);
+            continue;
+        }
+
+        auto weightArea = row.removeFromRight (64);
+        g.setColour (c.bypassed ? juce::Colour (0xffef5350) : ! c.present ? juce::Colour (0xff90a4ae) : juce::Colours::grey);
+        g.drawText (c.bypassed     ? juce::String ("BYPASS")
+                    : ! c.present ? juce::String ("NO SIGNAL")
+                                  : juce::String (c.weightDb, 1) + " dB",
+                    weightArea, juce::Justification::centredRight);
+
+        auto gainText = row.removeFromRight (56);
+        g.setColour (juce::Colour (0xffffb300));
+        g.drawText (juce::String (c.gainDb > -0.05f ? 0.0f : c.gainDb, 1), gainText,
+                    juce::Justification::centredRight);
+
+        row.removeFromRight (6);
+        const auto bars = row.toFloat().reduced (0, 4);
+        const auto half = bars.getWidth() / 2.0f - 2.0f;
+        const auto inputBar = bars.withWidth (half);
+        const auto inputColour = juce::Colour (0xff4caf50);
+        if (c.stereo)
+        {
+            // Thin left/right pair.
+            const float h = (inputBar.getHeight() - 2.0f) / 2.0f;
+            drawBar (inputBar.withHeight (h), (c.inputLeftDb + levelRangeDb) / levelRangeDb, inputColour);
+            drawBar (inputBar.withTrimmedTop (h + 2.0f), (c.inputRightDb + levelRangeDb) / levelRangeDb, inputColour);
+        }
+        else
+        {
+            drawBar (inputBar, (c.inputDb + levelRangeDb) / levelRangeDb, inputColour);
+        }
+        const auto gainBar = bars.withTrimmedLeft (half + 4.0f);
+        const auto gainColour = juce::Colour (0xffffb300);
+        drawBar (gainBar, gainProportion (c.gainDb),
+                 c.bypassed || ! c.present || ! allOn ? gainColour.withAlpha (0.3f) : gainColour);
+        g.setColour (juce::Colours::white.withAlpha (0.35f));
+        for (float tick : gainTicksDb)
+            if (tick < 0.0f && tick > -gainRangeDb)
+                g.drawVerticalLine ((int) std::round (gainBar.getX() + gainBar.getWidth() * gainProportion (tick)),
+                                    gainBar.getY(), gainBar.getBottom());
+    }
+}
+
+//==================================================================================================
 AutomixEditor::AutomixEditor (AutomixProcessor& p)
     : AudioProcessorEditor (p),
       processor (p),
       weightAttachment (p.getParameters(), AutomixProcessor::weightId, weightSlider),
-      outputGainAttachment (p.getParameters(), AutomixProcessor::outputGainId, outputGainSlider)
+      outputGainAttachment (p.getParameters(), AutomixProcessor::outputGainId, outputGainSlider),
+      bypassAttachment (p.getParameters(), AutomixProcessor::bypassId, bypassButton),
+      groupAttachment (p.getParameters(), AutomixProcessor::groupId, withGroupItems (groupBox))
 {
     logoImage = juce::ImageCache::getFromMemory (Assets::sgtm_logo_png, Assets::sgtm_logo_pngSize);
 
@@ -69,13 +280,59 @@ AutomixEditor::AutomixEditor (AutomixProcessor& p)
     setUpKnob (weightSlider, weightLabel, "Weight");
     setUpKnob (outputGainSlider, outputGainLabel, "Output");
 
-    setSize (380, 240);
+    // This channel's name, shown on every linked instance. Empty = the host's track name.
+    nameEditor.setEditable (true);
+    nameEditor.setText (p.getDisplayedLabel(), juce::dontSendNotification);
+    nameEditor.setTooltip ("Channel name (click to edit)");
+    nameEditor.setColour (juce::Label::backgroundColourId, juce::Colour (0xff202124));
+    nameEditor.setColour (juce::Label::textColourId, juce::Colours::white);
+    nameEditor.onTextChange = [this]
+    {
+        processor.setChannelName (nameEditor.getText());
+        nameEditor.setText (processor.getDisplayedLabel(), juce::dontSendNotification);
+    };
+    addAndMakeVisible (nameEditor);
+
+    bypassButton.setTooltip ("This channel at unity gain, out of the gain sharing");
+    addAndMakeVisible (bypassButton);
+
+    groupLabel.setText ("Group", juce::dontSendNotification);
+    groupLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (groupLabel);
+    helpButton.setTooltip ("Help");
+    helpButton.onClick = [this] { showHelpDialog(); };
+    addAndMakeVisible (helpButton);
+
+    groupBox.setTooltip ("Gain is shared only with channels in the same group");
+    groupBox.setLookAndFeel (&groupLookAndFeel);
+    updateGroupColours();
+    addAndMakeVisible (groupBox);
+
+    allOnButton.setTooltip ("Turns the automix on or off on every linked channel at once, for A/B comparison");
+    allOnButton.setToggleState (p.isAutomixOnForAll(), juce::dontSendNotification);
+    allOnButton.onClick = [this] { processor.setAutomixOnForAll (allOnButton.getToggleState()); };
+    addAndMakeVisible (allOnButton);
+
+    linkStatus.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    linkStatus.setFont (juce::FontOptions (12.0f));
+    addAndMakeVisible (linkStatus);
+
+    channelViewport.setViewedComponent (&channelList, false);
+    channelViewport.setScrollBarsShown (true, false);
+    addAndMakeVisible (channelViewport);
+
+    // Resizable: the default size is the smallest; extra height goes to the channel list.
+    const auto size = p.getEditorSize(); // read before the calls below report a size of their own
+    setResizable (true, true);
+    setResizeLimits (minWidth, minHeight, 1600, 1600);
+    setSize (std::max (minWidth, size.x), std::max (minHeight, size.y));
     startTimerHz (30);
 }
 
 AutomixEditor::~AutomixEditor()
 {
     stopTimer();
+    groupBox.setLookAndFeel (nullptr);
 }
 
 void AutomixEditor::paint (juce::Graphics& g)
@@ -94,16 +351,191 @@ void AutomixEditor::paint (juce::Graphics& g)
     g.setFont (juce::FontOptions (16.0f, juce::Font::bold));
     g.drawText ("Automix", header, juce::Justification::centredLeft);
 
-    // Version in the title bar, so a screenshot or bug report says which build is running.
+    // Version in the title bar, left of the help button, so a screenshot or bug report says
+    // which build is running.
+    header.removeFromRight (helpButtonSize + 6);
     g.setColour (juce::Colours::grey);
     g.setFont (juce::FontOptions (12.0f));
     g.drawText ("v" JucePlugin_VersionString, header, juce::Justification::centredRight);
 }
 
+void AutomixEditor::showHelpDialog()
+{
+    // Reads top to bottom like the window: setup, controls, the channel list, meters, then how it
+    // decides and what to do when something is off.
+    static const juce::String helpText =
+        "SGTM AUTOMIX keeps the total gain of all your speech microphones at the level of one "
+        "open microphone. Whoever talks comes up, the others go down, smoothly and with no "
+        "thresholds to set and no added latency. Put one SGTM Automix on every speech track; "
+        "the instances find each other by themselves.\n"
+        "\n"
+        "\n"
+        "=== SETTING UP ===\n"
+        "\n"
+        "WHERE TO INSERT IT\n"
+        "Post-fader, after EQ and before any compressor. Use one microphone per talker. With "
+        "the plug-in post-fader, a channel whose fader is down stops taking part by itself.\n"
+        "\n"
+        "HOW CHANNELS FIND EACH OTHER\n"
+        "Every SGTM Automix on this computer links up automatically, in any host and across "
+        "host processes, up to 64 channels. Run one host session at a time while using it: "
+        "two hosts open at once would link with each other. After updating the plug-in, quit "
+        "the host completely and reopen it, so all channels run the same version.\n"
+        "\n"
+        "\n"
+        "=== CONTROLS ===\n"
+        "\n"
+        "WEIGHT\n"
+        "A channel's priority. It changes how loud the channel looks to the automix, not its "
+        "audio level. Raise it for a moderator who should never be buried; lower it for a "
+        "noisy position. With nobody talking, balanced weights give every channel about the "
+        "same gain.\n"
+        "\n"
+        "OUTPUT\n"
+        "A plain output trim after the automix.\n"
+        "\n"
+        "BYPASS\n"
+        "Passes the channel's audio through unchanged, Output trim included, and takes it out "
+        "of the sharing, so the other channels share as if it were not there. Fades over "
+        "20 ms. The host's own bypass switch does the same.\n"
+        "\n"
+        "GROUP (A, B, C)\n"
+        "Gain is shared only among channels in the same group, so up to three separate "
+        "automixes can run at once, for example one per panel or stage. Changing group fades "
+        "over 20 ms.\n"
+        "\n"
+        "AUTOMIX ON (ALL CHANNELS)\n"
+        "Switches the automix off and on for every channel in every group at once, for A/B "
+        "comparison. Off, every channel runs at unity gain. It turns itself back on when a "
+        "new session starts.\n"
+        "\n"
+        "CHANNEL NAME\n"
+        "Click the name field to name the channel. Left empty, it uses the host's track name "
+        "where the host provides one.\n"
+        "\n"
+        "\n"
+        "=== THE CHANNEL LIST ===\n"
+        "Every SGTM Automix that is running, sorted by group and then by name, with this "
+        "channel highlighted: "
+        "its group, name, input level (left and right on a stereo track), the gain it lets "
+        "through, and its weight. The status line counts the active channels in this "
+        "channel's group.\n"
+        "\n"
+        "BYPASS: the channel is bypassed.\n"
+        "NO SIGNAL: the channel is quiet enough to be left out (see below).\n"
+        "IDLE: the host is not running the plug-in on that track, for example a track that "
+        "is not playing while the transport is stopped.\n"
+        "\n"
+        "Drag the window's bottom-right corner to make it larger and see more of the list.\n"
+        "\n"
+        "\n"
+        "=== METERS ===\n"
+        "\n"
+        "IN / OUT\n"
+        "Input and output level, 0 to -80 dBFS, left and right on a stereo track.\n"
+        "\n"
+        "GAIN\n"
+        "The gain the channel lets through: full at 0 dB, empty at -15 dB or lower. A channel "
+        "talking alone reads full. With N equal channels and nobody talking, each sits at "
+        "about 10 x log10(N) dB down, so two read -3 dB and ten read -10 dB.\n"
+        "\n"
+        "\n"
+        "=== HOW IT DECIDES ===\n"
+        "\n"
+        "LEVELS IN THE VOICE BAND\n"
+        "Each channel's level is judged between 150 Hz and 5 kHz only, so rumble, handling "
+        "noise and hiss take no share. The audio itself is not filtered. One gain applies to "
+        "both sides of a stereo track, so the stereo image never shifts.\n"
+        "\n"
+        "NO SIGNAL\n"
+        "A channel that stays below -81 dBFS for a second (fader down, muted, nothing "
+        "connected) drops out of the sharing and sits at unity, so it does not turn the others "
+        "down. It rejoins as soon as it reaches -75 dBFS. An open microphone's room tone sits "
+        "above that, so quiet open mics still count.\n"
+        "\n"
+        "TIMING\n"
+        "A talker comes up within a few milliseconds and channels settle back over a few "
+        "hundred milliseconds after someone stops.\n"
+        "\n"
+        "BOUNCING\n"
+        "Bounce or export the whole mix. Offline bounces are calculated sample-exactly across "
+        "all channels when the host renders the tracks together. Bouncing in place, exporting "
+        "or freezing a single track renders it without the other channels, so the automix is "
+        "not applied to it.\n"
+        "\n"
+        "\n"
+        "=== IF SOMETHING IS OFF ===\n"
+        "\n"
+        "\"LINK UNAVAILABLE\"\n"
+        "The channel could not reach the others and runs on its own at unity gain. The reason "
+        "is shown in brackets. Quit the host completely and reopen it; if it persists, restart "
+        "the computer.\n"
+        "\n"
+        "A CHANNEL IS MISSING FROM THE LIST\n"
+        "Check that every track runs the same version of the plug-in (quit and reopen the "
+        "host after an update), and that the host is processing the track.\n"
+        "\n"
+        "\n"
+        "SGTM Automix is free to use, provided as-is with no warranty of any kind. Use it at "
+        "your own risk.";
+
+    auto* content = new juce::TextEditor();
+    content->setMultiLine (true);
+    content->setReadOnly (true);
+    content->setScrollbarsShown (true);
+    content->setCaretVisible (false);
+    content->setPopupMenuEnabled (true);
+    content->setFont (juce::FontOptions (14.0f));
+    content->setText (helpText, false);
+    content->setSize (420, 520);
+
+    // Colours are set on the text directly: the dialog is a separate window, launched async, so
+    // it can outlive this editor and must not point at anything the editor owns.
+    content->setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff2b2d31));
+    content->setColour (juce::TextEditor::textColourId, juce::Colours::white);
+    content->setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+    content->setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+    content->setColour (juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
+    content->setColour (juce::TextEditor::highlightColourId, juce::Colour (0xffffb300).withAlpha (0.35f));
+    content->setColour (juce::TextEditor::highlightedTextColourId, juce::Colours::white);
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned (content);
+    options.dialogTitle = "SGTM Automix -- Help";
+    options.dialogBackgroundColour = juce::Colour (0xff2b2d31);
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.launchAsync();
+}
+
 void AutomixEditor::resized()
 {
+    helpButton.setBounds (getLocalBounds().removeFromTop (34).reduced (12, 6).removeFromRight (helpButtonSize)
+                              .withSizeKeepingCentre (helpButtonSize, helpButtonSize));
+
     auto area = getLocalBounds().reduced (12);
     area.removeFromTop (28);
+
+    processor.setEditorSize ({ getWidth(), getHeight() });
+
+    auto top = area.removeFromTop (190);
+    area.removeFromTop (8);
+    auto listArea = area;
+    auto switchRow = listArea.removeFromTop (26);
+    bypassButton.setBounds (switchRow.removeFromLeft (90));
+    groupBox.setBounds (switchRow.removeFromRight (56).reduced (0, 1));
+    groupLabel.setBounds (switchRow.removeFromRight (48));
+    allOnButton.setBounds (switchRow);
+    auto statusRow = listArea.removeFromTop (24);
+    nameEditor.setBounds (statusRow.removeFromLeft (150).reduced (0, 2));
+    statusRow.removeFromLeft (8);
+    linkStatus.setBounds (statusRow);
+    listArea.removeFromTop (4);
+    channelViewport.setBounds (listArea);
+    channelList.setSize (listArea.getWidth() - channelViewport.getScrollBarThickness(),
+                         channelList.getHeight());
+    area = top;
 
     auto meters = area.removeFromLeft (150);
     const int meterWidth = meters.getWidth() / 3;
@@ -122,12 +554,90 @@ void AutomixEditor::resized()
     }
 }
 
+// The selector takes the chosen group's colour: tinted background, coloured text and outline.
+void AutomixEditor::updateGroupColours()
+{
+    const int group = processor.getGroup();
+    if (group == shownGroup)
+        return;
+    shownGroup = group;
+
+    const auto colour = groupColour (group);
+    groupBox.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff202124).interpolatedWith (colour, 0.3f));
+    groupBox.setColour (juce::ComboBox::textColourId, colour.brighter (0.4f));
+    groupBox.setColour (juce::ComboBox::outlineColourId, colour);
+    groupBox.setColour (juce::ComboBox::arrowColourId, colour.brighter (0.4f));
+    groupLabel.setColour (juce::Label::textColourId, colour.brighter (0.4f));
+}
+
 void AutomixEditor::timerCallback()
 {
+    updateGroupColours();
+    processor.publishShownGroup(); // a group change shows in every list, also while stopped
     const auto& m = processor.getMeters();
-    inputMeter.setLevelDb (m.inputDb.load (std::memory_order_relaxed));
+    // Mono or stereo straight from the plug-in's current layout, so the meters follow every
+    // layout change at once, with or without audio running.
+    const int inputs = processor.getTotalNumInputChannels(), outputs = processor.getTotalNumOutputChannels();
+    const bool stereo = outputs >= 2;
+    if (inputs != shownInputs || outputs != shownOutputs)
+    {
+        shownInputs = inputs;
+        shownOutputs = outputs;
+        const auto layout = juce::String (stereo ? "stereo" : "mono") + " (" + juce::String (inputs) + " in, "
+                            + juce::String (outputs) + " out)";
+        inputMeter.setTooltip ("Track layout: " + layout);
+        outputMeter.setTooltip ("Track layout: " + layout);
+    }
+    inputMeter.setLevelsDb (m.inputLeftDb.load (std::memory_order_relaxed),
+                            m.inputRightDb.load (std::memory_order_relaxed), stereo);
     gainMeter.setLevelDb (m.automixGainDb.load (std::memory_order_relaxed));
-    outputMeter.setLevelDb (m.outputDb.load (std::memory_order_relaxed));
+    outputMeter.setLevelsDb (m.outputLeftDb.load (std::memory_order_relaxed),
+                             m.outputRightDb.load (std::memory_order_relaxed), stereo);
+
+    auto channels = processor.getLinkedChannels();
+    std::sort (channels.begin(), channels.end(), channelListOrder);
+    const int ownGroup = processor.getGroup();
+    int idle = 0;
+    bool selfIdle = false;
+    for (const auto& c : channels)
+    {
+        idle += (! c.isSelf && c.idle && c.group == ownGroup) ? 1 : 0;
+        selfIdle = selfIdle || (c.isSelf && c.idle);
+    }
+
+    juce::String status;
+    if (! processor.isLinkAvailable())
+        status = "Link unavailable (" + processor.getLinkUnavailableReason() + "): running solo";
+    else
+    {
+        // Channels in this group that are processing, and how many of them take part (signal
+        // present, not bypassed).
+        int inGroup = 0, active = 0;
+        for (const auto& c : channels)
+            if (c.group == ownGroup && ! c.idle)
+            {
+                ++inGroup;
+                active += (c.present && ! c.bypassed) ? 1 : 0;
+            }
+        status = "Group " + AutomixProcessor::groupName (ownGroup) + ": " + juce::String (active) + " active of "
+                 + juce::String (inGroup) + " channel" + (inGroup == 1 ? "" : "s");
+        if (idle > 0)
+            status << ", " << idle << " idle";
+        if (selfIdle)
+            status = "Idle: the host is not processing this track";
+    }
+    if (! processor.isAutomixOnForAll())
+        status = "Automix OFF on all channels";
+    if (allOnButton.getToggleState() != processor.isAutomixOnForAll())
+        allOnButton.setToggleState (processor.isAutomixOnForAll(), juce::dontSendNotification);
+    if (linkStatus.getText() != status)
+        linkStatus.setText (status, juce::dontSendNotification);
+
+    if (! nameEditor.isBeingEdited() && nameEditor.getText() != processor.getDisplayedLabel())
+        nameEditor.setText (processor.getDisplayedLabel(), juce::dontSendNotification);
+
+    channelList.setChannels (channels, processor.isAutomixOnForAll());
+    gainMeter.setDimmed (processor.isBypassed() || ! processor.isAutomixOnForAll());
 }
 
 } // namespace sgtm

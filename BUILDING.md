@@ -75,6 +75,29 @@ plugins and needs a free Avid developer account. Shipping AAX needs Avid's
 PACE signing tools (wraptool and an iLok signing certificate), requested
 from Avid.
 
+To build and install an unsigned AAX for testing in Pro Tools Developer
+(development only; never package or publish it):
+
+```sh
+cd plugin
+cmake -B build-aax -S . -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DSGTM_BUILD_AAX=ON -DSGTM_BUILD_PROBE=OFF
+cmake --build build-aax --target SGTMAutomix_AAX -j8
+```
+
+The build copies `SGTM Automix.aaxplugin` into
+`/Library/Application Support/Avid/Audio/Plug-Ins`. If that folder is not
+writable for you, copy it there yourself with
+`sudo cp -R "build-aax/SGTMAutomix_artefacts/Release/AAX/SGTM Automix.aaxplugin" "/Library/Application Support/Avid/Audio/Plug-Ins/"`.
+Retail Pro Tools scans the same folder and will report the unsigned plugin
+as invalid; remove it from there when you are done testing.
+
+The AAX is set up for automixing, untested until it runs in Pro Tools:
+multi-mono is off (a stereo track gets one instance and one gain), AudioSuite
+is off (it processes a clip with no other channels to share with), and Pro
+Tools' dynamic plug-in processing is off (silent tracks keep running, so a
+bounce never waits on them). See `plugin/CMakeLists.txt`.
+
 ## Verifying a build
 
 Two test programs, both built by default:
@@ -88,10 +111,20 @@ Two test programs, both built by default:
   on known cases (4 equal mics at −6 dB each, one mic 20 dB
   louder at about 0 dB with the others at about −20 dB, two loud mics at
   −3 dB, weight, silence), bit-exact pass-through when solo, and identical
-  output for any block size.
+  output for any block size. It also runs several channels through the
+  instance link: live groups, an offline bounce on 4 threads with random
+  block sizes that must match an exact reference bit for bit (twice), tracks
+  rendered serially on one thread without stalling, groups (independent
+  sharing, a lone channel per group, moving between groups, and an offline
+  bounce with two groups against an exact reference), channels without
+  signal (not diluting the others, waking up smoothly, hysteresis, ten open
+  mics at room tone each at −10 dB), bypass, the
+  all-channels switch, peers dropping out, and a crashed peer process.
 - **SGTMAutomixSmokeTest** loads the built VST3s the way a host does and
   checks 0 samples latency, pass-through, the Output Gain parameter, state
-  save/restore, the editor, and that the probe logs every block.
+  save/restore, the editor, two linked instances sharing gain and Bypass,
+  and that the probe logs every block. It links its instances under a
+  private name, so a host running at the same time is not disturbed.
 
 Both must end with `ALL TESTS PASS`.
 
