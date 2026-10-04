@@ -13,6 +13,9 @@ All notable changes to SGTM Automix are documented here. Versions follow
   level, automix gain and weight. Channels can be named.
 - Bypass per channel (also the host's bypass) and an all-channels automix
   on/off switch for A/B comparison.
+- Groups A, B and C: gain is shared only within a group, so three automixes
+  can run at once.
+- Gain meters show the gain each channel lets through, 0 to −15 dB.
 
 ## [0.1.0] — development skeleton (not released)
 

@@ -73,6 +73,10 @@ public:
     static constexpr const char* weightId = "weight";
     static constexpr const char* outputGainId = "outputGain";
     static constexpr const char* bypassId = "bypass";
+    static constexpr const char* groupId = "group";
+
+    static juce::String groupName (int group) { return juce::String::charToString ((juce::juce_wchar) ('A' + group)); }
+    int getGroup() const noexcept { return (int) groupParam->load(); }
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -81,6 +85,7 @@ private:
     std::atomic<float>* weightDb = nullptr;
     std::atomic<float>* outputGainDb = nullptr;
     std::atomic<float>* bypass = nullptr;
+    std::atomic<float>* groupParam = nullptr;
 
     static std::string linkName();
     void handleAsyncUpdate() override;

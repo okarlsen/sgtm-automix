@@ -132,12 +132,15 @@ struct LinkedChannel
 };
 
 std::vector<LinkedChannel> makeLinkedChannels (const std::string& name, const std::vector<double>& levelsDb,
-                                              int total, const std::vector<double>& weightsDb = {})
+                                              int total, const std::vector<double>& weightsDb = {},
+                                              const std::vector<int>& groups = {})
 {
     std::vector<LinkedChannel> chans (levelsDb.size());
     for (size_t i = 0; i < chans.size(); ++i)
     {
         chans[i].link = std::make_unique<sgtm::InstanceLink> (name);
+        chans[i].link->prepare (linkRate);
+        chans[i].link->setGroup (groups.empty() ? 0 : groups[i], true);
         chans[i].link->join();
         chans[i].engine.prepare (linkRate);
         chans[i].engine.setWeightDb (weightsDb.empty() ? 0.0 : weightsDb[i]);
@@ -155,10 +158,11 @@ void processBlock (LinkedChannel& c, int64_t start, int n, bool offline, int64_t
 
 // Live: channels take turns block by block in one thread, like a host's audio callback.
 std::vector<double> runLiveGroup (const std::string& name, const std::vector<double>& levelsDb,
-                                  const std::vector<double>& weightsDb = {}, int block = 64)
+                                  const std::vector<double>& weightsDb = {}, int block = 64,
+                                  const std::vector<int>& groups = {})
 {
     const int total = 48000;
-    auto chans = makeLinkedChannels (name, levelsDb, total, weightsDb);
+    auto chans = makeLinkedChannels (name, levelsDb, total, weightsDb, groups);
     for (int pos = 0; pos + block <= total; pos += block)
         for (auto& c : chans)
             processBlock (c, pos, block, false, 1'000'000'000 + pos * nsPerSample);
@@ -174,6 +178,7 @@ std::vector<double> runLiveGroup (const std::string& name, const std::vector<dou
 struct OracleLink final : sgtm::PeerLevels
 {
     const std::vector<std::vector<double>>* powers = nullptr;
+    const std::vector<int>* groups = nullptr;
     size_t self = 0;
     int64_t firstHop = 0;
     void publish (int64_t, double) noexcept override {}
@@ -181,13 +186,14 @@ struct OracleLink final : sgtm::PeerLevels
     {
         double sum = 0.0;
         for (size_t i = 0; i < powers->size(); ++i)
-            if (i != self)
+            if (i != self && (groups->empty() || (*groups)[i] == (*groups)[self]))
                 sum += (*powers)[i][(size_t) (hop - firstHop)];
         return sum;
     }
 };
 
-std::vector<std::vector<float>> referenceRender (const std::vector<double>& levelsDb, int total, int64_t offset)
+std::vector<std::vector<float>> referenceRender (const std::vector<double>& levelsDb, int total, int64_t offset,
+                                                 const std::vector<int>& groups = {})
 {
     const size_t n = levelsDb.size();
     std::vector<std::vector<double>> powers (n);
@@ -214,6 +220,7 @@ std::vector<std::vector<float>> referenceRender (const std::vector<double>& leve
     {
         OracleLink oracle;
         oracle.powers = &powers;
+        oracle.groups = &groups;
         oracle.self = i;
         oracle.firstHop = firstHop;
         sgtm::AutomixChannel c;
@@ -358,6 +365,63 @@ void linkTests()
         check (ms < 2000.0, "offline, tracks rendered serially on one thread: no stall (ms for 10 s x 4)", ms, 2000.0);
         check (near (sgtm::gainToDb (chans[0].engine.getCurrentGain()), -6.02, 0.5),
                "offline serial: gains still about -6 dB", sgtm::gainToDb (chans[0].engine.getCurrentGain()), -6.02);
+    }
+
+    {
+        LinkTestName shm;
+        auto g = runLiveGroup (shm.name, { -40, -40, -40, -40 }, {}, 64, { 0, 0, 1, 1 });
+        check (near (g[0], -3.01, 0.5) && near (g[1], -3.01, 0.5), "groups: two equal mics in A, about -3 dB each",
+               g[0], -3.01);
+        check (near (g[2], -3.01, 0.5) && near (g[3], -3.01, 0.5), "and two in B, independently -3 dB each",
+               g[2], -3.01);
+    }
+    {
+        LinkTestName shm;
+        auto g = runLiveGroup (shm.name, { -40, -40, -40 }, {}, 64, { 0, 0, 2 });
+        check (near (g[2], 0.0, 1e-9), "a lone channel in group C stays at unity", g[2], 0.0);
+        check (near (g[0], -3.01, 0.5), "while the two in A share", g[0], -3.01);
+    }
+    {
+        // Moving a channel from B to A while playing: gains change smoothly, then 3 share.
+        LinkTestName shm;
+        auto chans = makeLinkedChannels (shm.name, { -40, -40, -40 }, 96000, {}, { 0, 0, 1 });
+        double biggestStep = 0.0;
+        std::vector<double> previous (3, 1.0);
+        for (int pos = 0; pos + 64 <= 96000; pos += 64)
+        {
+            if (pos == 48000)
+                chans[2].link->setGroup (0);
+            for (auto& c : chans)
+                processBlock (c, pos, 64, false, 1'000'000'000 + pos * nsPerSample);
+            for (size_t i = 0; i < 3; ++i)
+            {
+                const double gain = chans[i].engine.getCurrentGain();
+                if (pos > 48000)
+                    biggestStep = std::max (biggestStep, std::abs (gain - previous[i]));
+                previous[i] = gain;
+            }
+        }
+        const double g2 = sgtm::gainToDb (chans[2].engine.getCurrentGain());
+        check (near (g2, -4.77, 0.5) && chans[2].link->getNumPeers() == 2, "moved channel ends sharing with A's two",
+               g2, -4.77);
+        // An instant switch would jump about 0.42 in one block; the 20 ms fade spreads it over ~15.
+        check (biggestStep < 0.1, "moving between groups fades (largest gain change per 64 samples)", biggestStep, 0.1);
+    }
+    {
+        // Offline bounce with two groups at once, matching an exact per-group reference.
+        LinkTestName shm;
+        const std::vector<double> levels { -20, -30, -40, -26 };
+        const std::vector<int> groups { 0, 1, 0, 1 };
+        const int total = 48000;
+        auto reference = referenceRender (levels, total, 0, groups);
+        auto chans = makeLinkedChannels (shm.name, levels, total, {}, groups);
+        for (auto& c : chans)
+            c.link->beginBlock (sgtm::InstanceLink::steadyNowNs(), false, -64, 64);
+        runOfflineThreads (chans, total, 0, 31u);
+        double worst = 0.0;
+        for (size_t i = 0; i < chans.size(); ++i)
+            worst = std::max (worst, maxDiff (chans[i].audio, reference[i]));
+        check (worst == 0.0, "offline with groups A and B: identical to exact per-group reference", worst, 0.0);
     }
 
     {

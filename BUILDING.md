@@ -91,7 +91,9 @@ Two test programs, both built by default:
   output for any block size. It also runs several channels through the
   instance link: live groups, an offline bounce on 4 threads with random
   block sizes that must match an exact reference bit for bit (twice), tracks
-  rendered serially on one thread without stalling, bypass, the
+  rendered serially on one thread without stalling, groups (independent
+  sharing, a lone channel per group, moving between groups, and an offline
+  bounce with two groups against an exact reference), bypass, the
   all-channels switch, peers dropping out, and a crashed peer process.
 - **SGTMAutomixSmokeTest** loads the built VST3s the way a host does and
   checks 0 samples latency, pass-through, the Output Gain parameter, state

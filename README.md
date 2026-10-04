@@ -35,13 +35,17 @@ compressor (compression flattens the level differences it relies on).
 - **Bypass** puts the channel at unity gain and takes it out of the gain
   sharing, so the other channels share as if it were not there. It fades
   over 20 ms and follows the host's own bypass button.
+- **Group** (A, B or C) picks which automix the channel belongs to. Gain is
+  shared only among channels in the same group, so up to three automixes
+  can run at once, for example one per panel. Changing it fades over 20 ms.
 - **Automix on (all channels)** switches the automix off or on for every
   channel at once, for A/B comparison. Switching it on any instance switches
   them all. It is not saved with a session, and turns itself back on when a
   new session starts.
 - Meters: **IN** input level, **GAIN** the automix gain, **OUT** output level.
-- The channel list shows every running channel: its name, input level,
-  automix gain and weight, with this instance highlighted. Click the name
+- The channel list shows every running channel, sorted by group: its group,
+  name, input level, gain (full at 0 dB, empty at −15 dB) and weight, with
+  this instance highlighted. Click the name
   field to name the channel; left empty, it uses the host's track name where
   the host provides one.
 

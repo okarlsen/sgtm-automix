@@ -18,6 +18,10 @@
 // renders tracks one after another on one thread), it stops waiting for that peer for an
 // exponentially growing number of blocks and uses the peer's newest value instead.
 //
+// Channels belong to one of three groups (A, B, C); gain is shared only within a group. Moving a
+// channel to another group crossfades its membership over a few milliseconds, both in its own sum
+// and in what the other channels see, so the move is click-free.
+//
 // Peers whose heartbeat is older than a second drop out. A slot whose owner process has died is
 // reclaimed by the next instance that needs one.
 
@@ -53,6 +57,7 @@ constexpr uint32_t magic = 0x53414d31; // layout tag; bump with the version in t
 constexpr int maxSlots = 64;
 constexpr int ringHops = 8192;          // ~2.7 s at 48 kHz with 16-sample hops
 constexpr int labelBytes = 48;
+constexpr int numGroups = 3;
 
 static_assert (std::atomic<int64_t>::is_always_lock_free, "needs lock-free 64-bit atomics");
 static_assert (std::atomic<uint64_t>::is_always_lock_free, "needs lock-free 64-bit atomics");
@@ -85,6 +90,10 @@ struct alignas (64) Slot
     std::atomic<uint32_t> inputDbBits, gainDbBits, outputDbBits, weightDbBits;
     std::atomic<uint32_t> bypassed;
 
+    // Group membership, written by the owner's audio thread. While moving, the channel counts
+    // (1 - fade) in prevGroup and fade in group.
+    std::atomic<uint32_t> group, prevGroup, fadeBits;
+
     // Label, written by the owner's message thread. Even seq = stable.
     std::atomic<uint32_t> labelSeq;
     std::atomic<uint64_t> labelWords[labelBytes / 8];
@@ -111,6 +120,7 @@ struct LinkedChannelInfo
     float inputDb = -120.0f, gainDb = 0.0f, outputDb = -120.0f, weightDb = 0.0f;
     bool bypassed = false;
     bool idle = false; // loaded but not processing (for example Logic with the transport stopped)
+    int group = 0;     // 0 = A, 1 = B, 2 = C
 };
 
 //==================================================================================================
@@ -205,6 +215,8 @@ public:
 
                 if (s.owner.compare_exchange_strong (current, token, std::memory_order_acq_rel))
                 {
+                    groupFade = 1.0;
+                    prevGroup = group;
                     initialiseSlot (s);
                     self = &s;
                     selfIndex = i;
@@ -271,6 +283,7 @@ public:
             info.slot = i;
             info.isSelf = isSelf;
             info.idle = ! processing;
+            info.group = (int) s.group.load (std::memory_order_relaxed);
             info.label = readLabel (s);
             if (info.label.empty())
                 info.label = "Channel " + std::to_string (i + 1);
@@ -291,6 +304,7 @@ public:
     void beginBlock (int64_t nowNs, bool isOffline, int64_t startSample, int numSamples) noexcept
     {
         numPeers = 0;
+        numListed = 0;
         offline = isOffline;
         waitDeadlineNs = 0;
         ++blockCounter;
@@ -322,7 +336,10 @@ public:
             if (state.owner != owner)
                 state = { owner, 0, 0 };
 
-            auto& p = peers[(size_t) numPeers++];
+            if (membership (s, group) > 0.0)
+                ++numPeers;
+
+            auto& p = peers[(size_t) numListed++];
             p.slot = &s;
             p.state = &state;
             // Offline, every peer is read by position. A peer that is still running live (the
@@ -343,7 +360,28 @@ public:
         self->weightDbBits.store (linkdetail::toBits (weightDb), std::memory_order_relaxed);
     }
 
-    // Peers counted by the last beginBlock (this channel excluded).
+    // Group crossfade length, from the sample rate (message thread, before processing).
+    void prepare (double sampleRate, double groupFadeMs = 20.0) noexcept
+    {
+        groupFadeStep = std::min (1.0, EngineSettings::hopSize * 1000.0 / (groupFadeMs * sampleRate));
+    }
+
+    // This channel's group, 0 to numGroups - 1. Audio thread, before beginBlock. A change fades
+    // over the group fade time unless immediate.
+    void setGroup (int newGroup, bool immediate = false) noexcept
+    {
+        newGroup = std::clamp (newGroup, 0, linkdetail::numGroups - 1);
+        if (newGroup == group && ! immediate)
+            return;
+        prevGroup = immediate ? newGroup : group;
+        group = newGroup;
+        groupFade = immediate ? 1.0 : 0.0;
+        storeGroup();
+    }
+
+    int getGroup() const noexcept { return group; }
+
+    // Peers in this channel's group counted by the last beginBlock (this channel excluded).
     int getNumPeers() const noexcept { return numPeers; }
 
     // Offline waits that ran out of budget (diagnostics and tests).
@@ -364,15 +402,30 @@ public:
 
         self->latestPowerBits.store (linkdetail::toBits (power), std::memory_order_relaxed);
         self->latestHop.store (hopIndex, std::memory_order_release);
+
+        if (groupFade < 1.0)
+        {
+            groupFade = std::min (1.0, groupFade + groupFadeStep);
+            if (groupFade >= 1.0)
+                prevGroup = group;
+            storeGroup();
+        }
     }
 
     double sumOfPeerPowers (int64_t hopIndex) noexcept override
     {
+        // Mid-move this channel counts its old group's peers with (1 - fade) and the new one's
+        // with fade; the peers' own moves are weighted the same way.
         double sum = 0.0;
-        for (int i = 0; i < numPeers; ++i)
+        for (int i = 0; i < numListed; ++i)
         {
             auto& p = peers[(size_t) i];
-            sum += p.exact ? exactPower (p, hopIndex) : latestPower (*p.slot);
+            double weight = groupFade * membership (*p.slot, group);
+            if (groupFade < 1.0)
+                weight += (1.0 - groupFade) * membership (*p.slot, prevGroup);
+            if (weight <= 0.0)
+                continue;
+            sum += weight * (p.exact ? exactPower (p, hopIndex) : latestPower (*p.slot));
         }
         return sum;
     }
@@ -391,6 +444,26 @@ private:
         PeerState* state = nullptr;
         bool exact = false;
     };
+
+    // How much a peer counts in group g: 1 when settled there, partly while moving in or out.
+    static double membership (const linkdetail::Slot& s, int g) noexcept
+    {
+        const auto peerGroup = (int) s.group.load (std::memory_order_relaxed);
+        const auto peerPrev = (int) s.prevGroup.load (std::memory_order_relaxed);
+        if (peerGroup == peerPrev)
+            return peerGroup == g ? 1.0 : 0.0;
+        const double fade = linkdetail::fromBits32 (s.fadeBits.load (std::memory_order_relaxed));
+        return (peerGroup == g ? fade : 0.0) + (peerPrev == g ? 1.0 - fade : 0.0);
+    }
+
+    void storeGroup() noexcept
+    {
+        if (self == nullptr)
+            return;
+        self->fadeBits.store (linkdetail::toBits ((float) groupFade), std::memory_order_relaxed);
+        self->prevGroup.store ((uint32_t) prevGroup, std::memory_order_relaxed);
+        self->group.store ((uint32_t) group, std::memory_order_relaxed);
+    }
 
     static size_t ringIndex (int64_t hop) noexcept
     {
@@ -513,6 +586,9 @@ private:
         s.latestHop.store (INT64_MIN, std::memory_order_relaxed);
         s.latestPowerBits.store (linkdetail::toBits (EngineSettings {}.powerFloor), std::memory_order_relaxed);
         s.bypassed.store (0, std::memory_order_relaxed);
+        s.group.store ((uint32_t) group, std::memory_order_relaxed);
+        s.prevGroup.store ((uint32_t) group, std::memory_order_relaxed);
+        s.fadeBits.store (linkdetail::toBits (1.0f), std::memory_order_relaxed);
         for (auto& e : s.ring)
             e.tag.store (0, std::memory_order_relaxed);
         std::atomic_thread_fence (std::memory_order_release);
@@ -624,7 +700,9 @@ private:
     bool offline = false, running = false;
     int64_t expectedNextSample = 0, myRunStartNs = 0, waitDeadlineNs = 0, blockCounter = 0;
     int64_t waitTimeouts = 0;
-    int numPeers = 0;
+    int numPeers = 0, numListed = 0;
+    int group = 0, prevGroup = 0;
+    double groupFade = 1.0, groupFadeStep = 1.0;
     std::array<Peer, linkdetail::maxSlots> peers {};
     std::array<PeerState, linkdetail::maxSlots> peerState {};
 };

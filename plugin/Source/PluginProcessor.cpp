@@ -32,6 +32,7 @@ AutomixProcessor::AutomixProcessor()
     weightDb = parameters.getRawParameterValue (weightId);
     outputGainDb = parameters.getRawParameterValue (outputGainId);
     bypass = parameters.getRawParameterValue (bypassId);
+    groupParam = parameters.getRawParameterValue (groupId);
     link.join();
 }
 
@@ -61,6 +62,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout AutomixProcessor::createPara
             juce::ParameterID { outputGainId, 1 }, "Output Gain",
             juce::NormalisableRange<float> (-24.0f, 12.0f, 0.1f), 0.0f, dbAttributes),
         std::make_unique<juce::AudioParameterBool> (juce::ParameterID { bypassId, 1 }, "Bypass", false),
+        // Gain is shared only among channels in the same group.
+        std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { groupId, 1 }, "Group",
+                                                      juce::StringArray { "A", "B", "C" }, 0),
     };
 }
 
@@ -87,6 +91,8 @@ void AutomixProcessor::prepareToPlay (double sampleRate, int)
     outputGain.reset (sampleRate, 0.02);
     outputGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (outputGainDb->load()));
     samplePosition = 0;
+    link.prepare (sampleRate);
+    link.setGroup (getGroup(), true);
     link.join();
     publishLabel();
 }
@@ -114,6 +120,7 @@ void AutomixProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
                 if (auto time = position->getTimeInSamples())
                     startSample = *time;
 
+    link.setGroup (getGroup());
     link.beginBlock (InstanceLink::steadyNowNs(), offline, startSample, numSamples);
     meters.numPeers.store (link.getNumPeers(), std::memory_order_relaxed);
 

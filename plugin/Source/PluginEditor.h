@@ -69,6 +69,9 @@ private:
     juce::ToggleButton bypassButton { "Bypass" };
     juce::AudioProcessorValueTreeState::ButtonAttachment bypassAttachment;
     juce::ToggleButton allOnButton { "Automix on (all channels)" };
+    juce::ComboBox groupBox;
+    juce::Label groupLabel;
+    juce::AudioProcessorValueTreeState::ComboBoxAttachment groupAttachment;
 
     juce::Label nameEditor;
     juce::Label linkStatus;

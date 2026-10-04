@@ -13,6 +13,19 @@ namespace
 constexpr float gainRangeDb = 15.0f;
 constexpr float gainTicksDb[] = { 0.0f, -3.0f, -6.0f, -9.0f, -12.0f, -15.0f };
 
+juce::Colour groupColour (int group)
+{
+    const juce::Colour colours[] = { juce::Colour (0xff4fc3f7), juce::Colour (0xffba68c8), juce::Colour (0xff81c784) };
+    return colours[juce::jlimit (0, 2, group)];
+}
+
+// The combo box needs its items before the parameter attachment is made.
+juce::ComboBox& withGroupItems (juce::ComboBox& box)
+{
+    box.addItemList ({ "A", "B", "C" }, 1);
+    return box;
+}
+
 float gainProportion (float gainDb) { return juce::jlimit (0.0f, 1.0f, (gainDb + gainRangeDb) / gainRangeDb); }
 } // namespace
 
@@ -82,7 +95,7 @@ void ChannelList::setChannels (std::vector<LinkedChannelInfo> newChannels, bool 
     {
         // Compare at display resolution so an idle list does not repaint.
         auto q = [] (float db) { return (int) std::lround (db * 2.0f); };
-        return a.slot == b.slot && a.isSelf == b.isSelf && a.label == b.label && q (a.inputDb) == q (b.inputDb)
+        return a.slot == b.slot && a.group == b.group && a.isSelf == b.isSelf && a.label == b.label && q (a.inputDb) == q (b.inputDb)
                && q (a.gainDb) == q (b.gainDb) && q (a.weightDb) == q (b.weightDb) && a.bypassed == b.bypassed && a.idle == b.idle;
     };
 
@@ -111,7 +124,8 @@ void ChannelList::paint (juce::Graphics& g)
         auto row = juce::Rectangle<int> (0, 0, getWidth(), headerHeight).reduced (6, 0);
         g.setColour (juce::Colours::grey);
         g.setFont (11.0f);
-        g.drawText ("Channel", row.removeFromLeft (120), juce::Justification::centredLeft);
+        g.drawText ("Grp", row.removeFromLeft (26), juce::Justification::centredLeft);
+        g.drawText ("Channel", row.removeFromLeft (100), juce::Justification::centredLeft);
         g.drawText ("Weight", row.removeFromRight (64), juce::Justification::centredRight);
         g.drawText ("Gain dB", row.removeFromRight (56), juce::Justification::centredRight);
         row.removeFromRight (6);
@@ -128,8 +142,16 @@ void ChannelList::paint (juce::Graphics& g)
     }
 
     int y = headerHeight;
+    int previousGroup = -1;
     for (const auto& c : channels)
     {
+        if (previousGroup >= 0 && c.group != previousGroup)
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.15f));
+            g.drawHorizontalLine (y, 0.0f, (float) getWidth());
+        }
+        previousGroup = c.group;
+
         auto row = juce::Rectangle<int> (0, y, getWidth(), rowHeight).reduced (0, 2);
         y += rowHeight;
 
@@ -142,7 +164,10 @@ void ChannelList::paint (juce::Graphics& g)
         row.reduce (6, 0);
         g.setColour (c.isSelf ? juce::Colours::white : juce::Colours::lightgrey);
         g.setFont (juce::FontOptions (12.0f, c.isSelf ? juce::Font::bold : juce::Font::plain));
-        g.drawText (c.label, row.removeFromLeft (120), juce::Justification::centredLeft, true);
+        g.setColour (groupColour (c.group));
+        g.drawText (AutomixProcessor::groupName (c.group), row.removeFromLeft (26), juce::Justification::centredLeft);
+        g.setColour (c.isSelf ? juce::Colours::white : juce::Colours::lightgrey);
+        g.drawText (c.label, row.removeFromLeft (100), juce::Justification::centredLeft, true);
 
         if (c.idle)
         {
@@ -182,7 +207,8 @@ AutomixEditor::AutomixEditor (AutomixProcessor& p)
       processor (p),
       weightAttachment (p.getParameters(), AutomixProcessor::weightId, weightSlider),
       outputGainAttachment (p.getParameters(), AutomixProcessor::outputGainId, outputGainSlider),
-      bypassAttachment (p.getParameters(), AutomixProcessor::bypassId, bypassButton)
+      bypassAttachment (p.getParameters(), AutomixProcessor::bypassId, bypassButton),
+      groupAttachment (p.getParameters(), AutomixProcessor::groupId, withGroupItems (groupBox))
 {
     logoImage = juce::ImageCache::getFromMemory (Assets::sgtm_logo_png, Assets::sgtm_logo_pngSize);
 
@@ -219,6 +245,12 @@ AutomixEditor::AutomixEditor (AutomixProcessor& p)
 
     bypassButton.setTooltip ("This channel at unity gain, out of the gain sharing");
     addAndMakeVisible (bypassButton);
+
+    groupLabel.setText ("Group", juce::dontSendNotification);
+    groupLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (groupLabel);
+    groupBox.setTooltip ("Gain is shared only with channels in the same group");
+    addAndMakeVisible (groupBox);
 
     allOnButton.setTooltip ("Turns the automix on or off on every linked channel at once, for A/B comparison");
     allOnButton.setToggleState (p.isAutomixOnForAll(), juce::dontSendNotification);
@@ -271,7 +303,9 @@ void AutomixEditor::resized()
 
     auto listArea = area.removeFromBottom (200);
     auto switchRow = listArea.removeFromTop (26);
-    bypassButton.setBounds (switchRow.removeFromLeft (110));
+    bypassButton.setBounds (switchRow.removeFromLeft (90));
+    groupBox.setBounds (switchRow.removeFromRight (56).reduced (0, 1));
+    groupLabel.setBounds (switchRow.removeFromRight (48));
     allOnButton.setBounds (switchRow);
     auto statusRow = listArea.removeFromTop (24);
     nameEditor.setBounds (statusRow.removeFromLeft (150).reduced (0, 2));
@@ -307,12 +341,15 @@ void AutomixEditor::timerCallback()
     gainMeter.setLevelDb (m.automixGainDb.load (std::memory_order_relaxed));
     outputMeter.setLevelDb (m.outputDb.load (std::memory_order_relaxed));
 
-    const auto channels = processor.getLinkedChannels();
+    auto channels = processor.getLinkedChannels();
+    std::stable_sort (channels.begin(), channels.end(),
+                      [] (const auto& a, const auto& b) { return a.group < b.group; });
+    const int ownGroup = processor.getGroup();
     int idle = 0;
     bool selfIdle = false;
     for (const auto& c : channels)
     {
-        idle += (! c.isSelf && c.idle) ? 1 : 0;
+        idle += (! c.isSelf && c.idle && c.group == ownGroup) ? 1 : 0;
         selfIdle = selfIdle || (c.isSelf && c.idle);
     }
 
@@ -322,8 +359,9 @@ void AutomixEditor::timerCallback()
     else
     {
         const int peers = m.numPeers.load (std::memory_order_relaxed);
-        status = peers == 0 ? juce::String ("Solo: no other channels processing")
-                            : "Linked with " + juce::String (peers) + " other channel" + (peers == 1 ? "" : "s");
+        status = "Group " + AutomixProcessor::groupName (processor.getGroup()) + ": "
+                 + (peers == 0 ? juce::String ("solo, no other channels processing")
+                               : "linked with " + juce::String (peers) + " other channel" + (peers == 1 ? "" : "s"));
         if (idle > 0)
             status << ", " << idle << " idle";
         if (selfIdle)
