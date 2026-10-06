@@ -321,6 +321,14 @@ public:
         if (self == nullptr)
             return;
         self->heartbeatNs.store (0, std::memory_order_release);
+
+        // Do not leave this channel's name behind in the shared block.
+        {
+            const std::lock_guard<std::mutex> lock (labelMutex);
+            const char empty[linkdetail::labelBytes] = {};
+            writeLabel (empty);
+        }
+
         uint64_t mine = token;
         self->owner.compare_exchange_strong (mine, 0, std::memory_order_acq_rel);
         self = nullptr;
@@ -382,7 +390,7 @@ public:
             info.slot = i;
             info.isSelf = isSelf;
             info.idle = ! processing;
-            info.group = (int) s.shownGroup.load (std::memory_order_relaxed);
+            info.group = std::min ((int) s.shownGroup.load (std::memory_order_relaxed), linkdetail::numGroups - 1);
             info.label = readLabel (s);
             if (info.label.empty())
                 info.label = "Channel " + std::to_string (i + 1);
@@ -546,9 +554,14 @@ public:
             if (groupFade < 1.0)
                 weight += (1.0 - groupFade) * membership (*p.slot, prevGroup);
             weight *= p.fade;
-            if (weight <= 0.0)
+            if (! (weight > 0.0))
                 continue;
-            sum += weight * (p.exact ? exactPower (p, hopIndex) : latestPower (*p.slot));
+
+            // Shared values are not trusted: a level that is negative, infinite or not a number
+            // is left out, so it can neither raise this channel's gain nor mute it.
+            const double power = p.exact ? exactPower (p, hopIndex) : latestPower (*p.slot);
+            if (power >= 0.0 && std::isfinite (power))
+                sum += std::min (weight, 1.0) * power;
         }
         return sum;
     }
@@ -576,7 +589,8 @@ private:
         const auto peerPrev = (int) s.prevGroup.load (std::memory_order_relaxed);
         if (peerGroup == peerPrev)
             return peerGroup == g ? 1.0 : 0.0;
-        const double fade = linkdetail::fromBits32 (s.fadeBits.load (std::memory_order_relaxed));
+        const double raw = linkdetail::fromBits32 (s.fadeBits.load (std::memory_order_relaxed));
+        const double fade = raw >= 0.0 && raw <= 1.0 ? raw : 1.0; // shared value, not trusted
         return (peerGroup == g ? fade : 0.0) + (peerPrev == g ? 1.0 - fade : 0.0);
     }
 
@@ -734,7 +748,12 @@ private:
             return;
         char buf[linkdetail::labelBytes] = {};
         std::memcpy (buf, label.data(), std::min (label.size(), sizeof (buf) - 1));
+        writeLabel (buf);
+    }
 
+    // Caller holds labelMutex and has checked self.
+    void writeLabel (const char* buf) noexcept
+    {
         self->labelSeq.fetch_add (1, std::memory_order_acq_rel);
         for (int w = 0; w < linkdetail::labelBytes / 8; ++w)
         {
@@ -804,6 +823,14 @@ private:
             const int err = errno;
             close (fd);
             return fail ("shared block has the wrong size", err);
+        }
+
+        // shm_open opens an existing block whoever made it. Only use one that this user owns
+        // and nobody else can open, so another account on the computer cannot stand in for it.
+        if (st.st_uid != geteuid() || (st.st_mode & 077) != 0)
+        {
+            close (fd);
+            return fail ("shared block belongs to another user", 0);
         }
 
         void* mem = mmap (nullptr, sizeof (linkdetail::Shared), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);

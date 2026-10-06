@@ -5,6 +5,11 @@ All notable changes to SGTM Automix are documented here. Versions follow
 
 ## [Unreleased]
 
+- Instance link hardening: a channel's gain can never go above unity
+  whatever another channel publishes, invalid shared levels are ignored, a
+  shared block that is not private to the current user is refused, and a
+  closed instance's name is cleared from the shared block.
+
 - Instance link: every SGTM Automix instance on the computer finds the
   others through shared memory and shares gain with them, also across host
   processes. Live, the audio thread never waits; offline bounces of the

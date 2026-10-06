@@ -6,6 +6,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -584,6 +585,93 @@ void linkTests()
         const double voiceFull = talkerGain (voiceNoise (48000, -30.0, 62u), false);
         check (near (voiceBoth, voiceFull, 0.3) && near (voiceBoth, -3.0, 0.6),
                "two equal voices share as before (-3 dB, same as the full-band detector)", voiceBoth, voiceFull);
+    }
+
+    std::printf ("\nUntrusted shared values\n");
+    {
+        // A peer level just below minus this channel's own power would give a gain far above
+        // unity. The code never publishes one, but a faulty writer in the shared block could.
+        check (sgtm::automixGain (1.0, -0.99) <= 1.0 && sgtm::automixGain (1.0, -2.0) <= 1.0,
+               "a negative peer sum cannot push the gain above unity", sgtm::automixGain (1.0, -0.99), 1.0);
+
+        struct HostilePeer final : sgtm::PeerLevels
+        {
+            double own = 0.0;
+            void publish (int64_t, double power) noexcept override { own = power; }
+            double sumOfPeerPowers (int64_t) noexcept override { return -0.99 * own; }
+        } peer;
+        sgtm::AutomixChannel c;
+        c.prepare (48000.0);
+        auto in = voiceNoise (48000, -20.0, 11u);
+        auto out = in;
+        for (int pos = 0; pos + 64 <= 48000; pos += 64)
+        {
+            float* p = out.data() + pos;
+            c.process (&p, 1, 64, pos, &peer);
+        }
+        bool louder = false;
+        for (size_t i = 0; i < in.size(); ++i)
+            louder = louder || std::abs (out[i]) > std::abs (in[i]);
+        check (! louder && c.getCurrentGain() <= 1.0, "through the engine, the output is never louder than the input",
+               c.getCurrentGain(), 1.0);
+    }
+    {
+        // Through the link: levels that are negative, infinite or not a number are left out.
+        LinkTestName shm;
+        sgtm::InstanceLink a (shm.name), b (shm.name);
+        a.join();
+        b.join();
+        const int64_t t = 5'000'000'000;
+        double worst = 0.0;
+        for (double bad : { -5.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN() })
+        {
+            b.beginBlock (t, false, 0, 64);
+            b.publish (0, bad);
+            a.beginBlock (t + 1000, false, 0, 64);
+            const double sum = a.sumOfPeerPowers (0);
+            worst = std::max (worst, std::isfinite (sum) ? std::abs (sum) : 1.0);
+        }
+        b.publish (0, 0.25);
+        check (worst == 0.0 && a.sumOfPeerPowers (0) == 0.25,
+               "a peer's negative, infinite or not-a-number level is ignored; a normal one counts", worst, 0.0);
+    }
+    {
+        // A block that other users could open (or that another user made) is refused.
+        LinkTestName shm;
+        {
+            const int fd = shm_open (shm.name.c_str(), O_RDWR | O_CREAT, 0666);
+            fchmod (fd, 0666);
+            ftruncate (fd, (off_t) sizeof (sgtm::linkdetail::Shared));
+            close (fd);
+        }
+        sgtm::InstanceLink open (shm.name);
+        check (! open.isAvailable() && open.getUnavailableReason() == "shared block belongs to another user",
+               "a shared block that is not private to this user is refused");
+
+        LinkTestName shm2;
+        shm2.name += "b";
+        sgtm::InstanceLink::unlinkShared (shm2.name);
+        sgtm::InstanceLink own (shm2.name);
+        check (own.isAvailable() && own.join(), "a block this user created (owner only) is accepted");
+        sgtm::InstanceLink::unlinkShared (shm2.name);
+    }
+    {
+        // A closed instance does not leave its name in the shared block.
+        LinkTestName shm;
+        auto a = std::make_unique<sgtm::InstanceLink> (shm.name);
+        a->join();
+        a->setLabel ("Secret guest");
+        const int slot = a->getSlotIndex();
+        a.reset();
+        const int fd = shm_open (shm.name.c_str(), O_RDWR, 0600);
+        auto* shared = static_cast<sgtm::linkdetail::Shared*> (
+            mmap (nullptr, sizeof (sgtm::linkdetail::Shared), PROT_READ, MAP_SHARED, fd, 0));
+        close (fd);
+        bool empty = true;
+        for (auto& w : shared->slots[slot].labelWords)
+            empty = empty && w.load() == 0;
+        munmap (shared, sizeof (sgtm::linkdetail::Shared));
+        check (empty, "a closed instance's name is cleared from the shared block");
     }
 
     std::printf ("\nFade-up\n");
