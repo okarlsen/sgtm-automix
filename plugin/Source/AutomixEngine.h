@@ -82,11 +82,13 @@ public:
 };
 
 //==================================================================================================
-// Amplitude gain for one channel, given its power and the sum of the others' powers.
+// Amplitude gain for one channel, given its power and the sum of the others' powers. Never above
+// unity: peer values come from shared memory, and a negative sum (which this code never
+// publishes, but a faulty writer could) must not turn a channel up.
 inline double automixGain (double ownPower, double peerPowerSum) noexcept
 {
     const double total = ownPower + peerPowerSum;
-    return total > 0.0 ? std::sqrt (ownPower / total) : 1.0;
+    return total > 0.0 ? std::min (1.0, std::sqrt (ownPower / total)) : 1.0;
 }
 
 inline double dbToGain (double db) noexcept { return std::pow (10.0, db / 20.0); }
