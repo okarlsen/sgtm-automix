@@ -19,6 +19,12 @@
 #         --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
 #
 # See the "Code signing" section of BUILDING.md.
+#
+# PACE (AAX) signing: PACE's tools and documentation are confidential under
+# the PACE license agreement, and this repo is public. Never commit wraptool,
+# PACE docs, or iLok/account identifiers here -- keep them in packaging/pace/
+# (gitignored) or outside the repo, and read credentials from the environment
+# or keychain, as for notarization above.
 
 # Overridable so a fork can sign with its own identities without editing
 # the scripts. Defaults are SGTM's (Team ID ZVP9U3LWAJ).
