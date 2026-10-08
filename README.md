@@ -29,6 +29,9 @@ Insert SGTM Automix on each speech track, after EQ and before any
 compressor (compression flattens the level differences it relies on).
 It is meant to be inserted post-fader, and works best with one microphone
 per talker.
+Put it on the talkers' own tracks, not on a bus or master that carries their
+sum in the same group: the bus would take a large share and turn every track
+down further.
 
 - **Weight** sets a channel's priority. It changes how loud the channel looks
   to the automixer, not its audio level. Balance the weights so all GAIN
