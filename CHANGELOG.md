@@ -5,6 +5,8 @@ All notable changes to SGTM Automix are documented here. Versions follow
 
 ## [Unreleased]
 
+- Offline: a track that starts or resumes partway through a bounce now pairs
+  with the other tracks sample-exactly.
 - Instance link hardening: a channel's gain can never go above unity
   whatever another channel publishes, invalid shared levels are ignored, a
   shared block that is not private to the current user is refused, and a

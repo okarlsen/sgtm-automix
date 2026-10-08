@@ -1013,6 +1013,50 @@ void linkTests()
     }
 
     {
+        // A channel whose processing starts mid-bounce (its region starts later, or the host
+        // skipped it over a gap) still reads peers that have been rendering since the bounce began
+        // by position, not as a previous pass.
+        sgtm::InstanceLink::Settings settings;
+        settings.waitBudgetNs = 2'000'000;
+        LinkTestName shm;
+        sgtm::InstanceLink a (shm.name, settings), b (shm.name, settings);
+        a.join();
+        b.join();
+
+        // b renders on its own for a while; a starts 300 ms of wall clock later.
+        int64_t hop = 0;
+        for (; hop < 100; ++hop)
+        {
+            b.beginBlock (sgtm::InstanceLink::steadyNowNs(), true, hop * 16, 16);
+            b.publish (hop, (double) hop);
+        }
+        std::this_thread::sleep_for (std::chrono::milliseconds (300));
+
+        // From here b stays one hop ahead of a, so its newest value is never the one a needs. a's
+        // first block can only see b once b has run a block after a started, so it is not counted.
+        b.beginBlock (sgtm::InstanceLink::steadyNowNs(), true, hop * 16, 16);
+        b.publish (hop, (double) hop);
+        int wrong = 0;
+        int64_t timeoutsAfterFirst = 0;
+        for (int k = 0; k < 64; ++k, ++hop)
+        {
+            b.beginBlock (sgtm::InstanceLink::steadyNowNs(), true, (hop + 1) * 16, 16);
+            b.publish (hop + 1, (double) (hop + 1));
+            a.beginBlock (sgtm::InstanceLink::steadyNowNs(), true, hop * 16, 16);
+            a.publish (hop, 1.0);
+            const bool exact = a.sumOfPeerPowers (hop) == (double) hop;
+            if (k == 0)
+                timeoutsAfterFirst = -a.getWaitTimeouts();
+            else
+                wrong += ! exact;
+        }
+        timeoutsAfterFirst += a.getWaitTimeouts();
+        check (wrong == 0 && timeoutsAfterFirst == 0,
+               "offline, a channel that starts mid-bounce reads earlier-started peers by position (wrong hops)",
+               wrong, 0.0);
+    }
+
+    {
         // Another process joins and publishes, then dies without leaving (a crash).
         LinkTestName shm;
         const pid_t child = fork();

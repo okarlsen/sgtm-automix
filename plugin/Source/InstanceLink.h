@@ -656,7 +656,11 @@ private:
     bool hasReached (const linkdetail::Slot& s, int64_t hop) const noexcept
     {
         return s.offline.load (std::memory_order_acquire) != 0
-               && s.runStartNs.load (std::memory_order_acquire) >= myRunStartNs - settings.runMarginNs
+               // Same pass: the peer's run began around ours, or it has processed a block since
+               // ours began (it was already rendering when this channel started or resumed
+               // mid-bounce). A peer still on a previous pass has done neither.
+               && (s.runStartNs.load (std::memory_order_acquire) >= myRunStartNs - settings.runMarginNs
+                   || s.heartbeatNs.load (std::memory_order_acquire) > myRunStartNs)
                && s.latestHop.load (std::memory_order_acquire) >= hop;
     }
 
