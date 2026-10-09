@@ -17,8 +17,8 @@ Built by SGTM on top of [JUCE](https://juce.com).
 Version 1.0.0, the first release. Instances on the same computer find each
 other and share gain, live and in offline bounces. Downloads are on the
 [releases page](https://github.com/okarlsen/sgtm-automix/releases): an
-installer for the AU and VST3, a zip with the same two plugins, and a
-separate installer for the AAX (Pro Tools).
+installer with the AU, VST3 and AAX (Pro Tools), and a zip with the AU and
+VST3 for installing by hand.
 
 ## Requirements
 

@@ -7,9 +7,9 @@ All notable changes to SGTM Automix are documented here. Versions follow
 
 ## [1.0.0] — 2026-10-09
 
-First release: AU and VST3 (installer and zip) and AAX for Pro Tools
-(separate installer), universal for Apple Silicon and Intel, signed and
-notarized.
+First release: one installer with the AU, VST3 and AAX (Pro Tools),
+installed for all users, plus a zip with the AU and VST3. Universal for
+Apple Silicon and Intel, signed and notarized.
 
 - Offline: a track that starts or resumes partway through a bounce now pairs
   with the other tracks sample-exactly.

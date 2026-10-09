@@ -214,23 +214,16 @@ With a completed Release build in place:
 ./packaging/build_zip.sh         # packaging/build/SGTM-Automix-<version>.zip
 ```
 
-The `.pkg` installs the AU and VST3 into the current user's
-`~/Library/Audio/Plug-Ins`, no administrator password needed. The `.zip`
-holds the same two bundles plus `INSTALL.txt`. The version comes from the
+The `.pkg` installs the AU, VST3 and AAX for all users of the Mac, into
+`/Library/Audio/Plug-Ins` and Pro Tools' plug-in folder, so it asks for an
+administrator password. The AAX comes from `plugin/build-aax` and must
+already be PACE-signed, notarized and stapled; the script refuses one that
+is not. The `.zip` holds the AU and VST3 plus `INSTALL.txt`. The version comes from the
 `project()` line in `plugin/CMakeLists.txt`. Releases are tagged
 `v<version>` and published on the GitHub releases page with both files
 attached, with the notes taken from `CHANGELOG.md`.
 
-The AAX has its own installer, because Pro Tools only looks in a system
-folder and that needs an administrator password:
-
-```sh
-./packaging/build_aax_installer.sh   # packaging/build/SGTM-Automix-<version>-AAX.pkg
-```
-
-It packages an AAX bundle that has already been PACE-signed, notarized and
-stapled, and refuses one that has not. PACE signing itself is not part of
-this repository: PACE's tools, documentation and account details are
+PACE signing itself is not part of this repository: PACE's tools, documentation and account details are
 confidential and stay in the gitignored `packaging/pace/` folder or outside
 the repo. The host probe is a development tool and is never packaged.
 
