@@ -221,8 +221,18 @@ holds the same two bundles plus `INSTALL.txt`. The version comes from the
 `v<version>` and published on the GitHub releases page with both files
 attached, with the notes taken from `CHANGELOG.md`.
 
-AAX is not in the release downloads until the plugin can be PACE-signed. The
-host probe is a development tool and is never packaged.
+The AAX has its own installer, because Pro Tools only looks in a system
+folder and that needs an administrator password:
+
+```sh
+./packaging/build_aax_installer.sh   # packaging/build/SGTM-Automix-<version>-AAX.pkg
+```
+
+It packages an AAX bundle that has already been PACE-signed, notarized and
+stapled, and refuses one that has not. PACE signing itself is not part of
+this repository: PACE's tools, documentation and account details are
+confidential and stay in the gitignored `packaging/pace/` folder or outside
+the repo. The host probe is a development tool and is never packaged.
 
 `COPY_PLUGIN_AFTER_BUILD` copies ad-hoc signed builds into your plug-in
 folders; re-copy from `plugin/build/SGTMAutomix_artefacts/Release/` after

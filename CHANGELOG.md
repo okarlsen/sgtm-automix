@@ -5,6 +5,12 @@ All notable changes to SGTM Automix are documented here. Versions follow
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-10-09
+
+First release: AU and VST3 (installer and zip) and AAX for Pro Tools
+(separate installer), universal for Apple Silicon and Intel, signed and
+notarized.
+
 - Offline: a track that starts or resumes partway through a bounce now pairs
   with the other tracks sample-exactly.
 - Instance link hardening: a channel's gain can never go above unity

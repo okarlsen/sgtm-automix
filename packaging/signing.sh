@@ -39,7 +39,9 @@ sgtm_check_no_stray_dylibs() {
     local bundle binary strays
     for bundle in "$@"; do
         binary="$bundle/Contents/MacOS/SGTM Automix"
-        strays="$(otool -L "$binary" | tail -n +2 \
+        # Dependency lines start with a tab; a universal binary also prints
+        # a "<path> (architecture ...):" heading per slice, which is not one.
+        strays="$(otool -L "$binary" | grep $'^\t' \
             | grep -v -e '/System/Library/' -e '/usr/lib/' || true)"
         if [[ -n "$strays" ]]; then
             echo "error: $(basename "$bundle") links against non-system libraries:" >&2
