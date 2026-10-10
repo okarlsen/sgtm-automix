@@ -92,8 +92,7 @@ writable for you, copy it there yourself with
 Retail Pro Tools scans the same folder and will report the unsigned plugin
 as invalid; remove it from there when you are done testing.
 
-The AAX is set up for automixing, untested until it runs in Pro Tools:
-multi-mono is off (a stereo track gets one instance and one gain), AudioSuite
+The AAX is set up for automixing: multi-mono is off (a stereo track gets one instance and one gain), AudioSuite
 is off (it processes a clip with no other channels to share with), and Pro
 Tools' dynamic plug-in processing is off (silent tracks keep running, so a
 bounce never waits on them). See `plugin/CMakeLists.txt`.
