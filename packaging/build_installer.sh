@@ -3,11 +3,12 @@
 # Builds the SGTM Automix macOS installer package: signed with a Developer ID,
 # notarized by Apple, and stapled.
 #
-# Produces packaging/build/SGTM-Automix-<version>.pkg from an existing Release
-# build in plugin/build (see BUILDING.md). Two pkgbuild components -- the AU
-# and the VST3 -- are combined with productbuild into a single installer that
-# writes into the current user's ~/Library/Audio/Plug-Ins, so it needs no
-# administrator password.
+# Produces packaging/build/SGTM-Automix-<version>.pkg from existing Release
+# builds (see BUILDING.md): the AU and VST3 from plugin/build and the AAX from
+# plugin/build-aax. Three pkgbuild components are combined with productbuild
+# into a single installer that installs for all users of the Mac, into
+# /Library/Audio/Plug-Ins and, for the AAX, the folder Pro Tools scans. Those
+# are system folders, so the installer asks for an administrator password.
 #
 # The plugin bundles are signed, notarized and stapled *before* being staged
 # into the package, so plugins installed from this .pkg carry their own
@@ -18,8 +19,9 @@
 # Requires the Developer ID certificates and a notarytool keychain profile --
 # see the "Code signing" section of BUILDING.md.
 #
-# AAX is not packaged yet: Pro Tools only loads AAX plug-ins signed with
-# Avid's PACE tools, which this project does not have access to yet.
+# The AAX must already be PACE-signed, notarized and stapled: Pro Tools only
+# loads an AAX signed with PACE's tools, which are not part of this
+# repository, and this script refuses an AAX that is not.
 #
 # Usage: ./packaging/build_installer.sh
 
@@ -34,6 +36,7 @@ source "$HERE/signing.sh"
 ARTEFACTS="$REPO_ROOT/plugin/build/SGTMAutomix_artefacts/Release"
 AU_BUNDLE="$ARTEFACTS/AU/SGTM Automix.component"
 VST3_BUNDLE="$ARTEFACTS/VST3/SGTM Automix.vst3"
+AAX_BUNDLE="${SGTM_AAX_BUNDLE:-$REPO_ROOT/plugin/build-aax/SGTMAutomix_artefacts/Release/AAX/SGTM Automix.aaxplugin}"
 
 BUILD_DIR="$HERE/build"
 STAGE_DIR="$BUILD_DIR/stage"
@@ -49,7 +52,7 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
-for bundle in "$AU_BUNDLE" "$VST3_BUNDLE"; do
+for bundle in "$AU_BUNDLE" "$VST3_BUNDLE" "$AAX_BUNDLE"; do
     if [[ ! -d "$bundle" ]]; then
         echo "error: missing $bundle" >&2
         echo "       Build the Release targets first -- see BUILDING.md." >&2
@@ -60,7 +63,17 @@ done
 echo "SGTM Automix $VERSION -- building installer"
 
 sgtm_require_signing_identities --with-installer
-sgtm_check_no_stray_dylibs "$AU_BUNDLE" "$VST3_BUNDLE"
+sgtm_check_no_stray_dylibs "$AU_BUNDLE" "$VST3_BUNDLE" "$AAX_BUNDLE"
+
+# Refuse an AAX that would not load: unsigned (no PACE signature), or signed
+# but not notarized and stapled. It is never re-signed here: a second
+# codesign pass would strip the PACE signature.
+if [[ ! -d "$AAX_BUNDLE/Contents/__Pace_Eden.bundle" ]]; then
+    echo "error: $AAX_BUNDLE is not PACE-signed" >&2
+    exit 1
+fi
+codesign --verify --deep --strict "$AAX_BUNDLE"
+xcrun stapler validate -q "$AAX_BUNDLE"
 
 # Sign, notarize and staple the plugins before they go into the package.
 sgtm_prepare_bundles "$AU_BUNDLE" "$VST3_BUNDLE"
@@ -69,32 +82,42 @@ sgtm_prepare_bundles "$AU_BUNDLE" "$VST3_BUNDLE"
 # build_zip.sh writes its zip here too, and blowing that away depending
 # on which script ran last is a needless footgun.
 rm -rf "$STAGE_DIR" "$BUILD_DIR/resources" "$BUILD_DIR/distribution.xml" \
-    "$BUILD_DIR/SGTMAutomix-AU.pkg" "$BUILD_DIR/SGTMAutomix-VST3.pkg"
-mkdir -p "$STAGE_DIR/au" "$STAGE_DIR/vst3"
+    "$BUILD_DIR/SGTMAutomix-AU.pkg" "$BUILD_DIR/SGTMAutomix-VST3.pkg" \
+    "$BUILD_DIR/SGTMAutomix-AAX.pkg" "$BUILD_DIR"/component-*.plist
+mkdir -p "$STAGE_DIR/au" "$STAGE_DIR/vst3" "$STAGE_DIR/aax"
 
 # pkgbuild wants a directory whose contents get copied into --install-location,
 # so stage each bundle on its own.
 cp -R "$AU_BUNDLE" "$STAGE_DIR/au/"
 cp -R "$VST3_BUNDLE" "$STAGE_DIR/vst3/"
+cp -R "$AAX_BUNDLE" "$STAGE_DIR/aax/"
 
-# --install-location paths are relative to the install domain, and the
-# distribution below enables only enable_currentUserHome -- so these resolve
-# under the installing user's home directory, not /.
-pkgbuild \
-    --quiet \
-    --root "$STAGE_DIR/au" \
-    --identifier "$PKG_ID_BASE.au" \
-    --version "$VERSION" \
-    --install-location "/Library/Audio/Plug-Ins/Components" \
-    "$BUILD_DIR/SGTMAutomix-AU.pkg"
+# The distribution below enables only enable_localSystem, so the install
+# locations are the system-wide folders, shared by every user of the Mac.
+#
+# pkgbuild marks bundles relocatable by default, which lets the installer
+# "update" any other copy of the bundle it finds on disk (a build folder, or
+# an older per-user install) instead of writing to the install location. Pin
+# each one.
+sgtm_build_component() {
+    local name="$1" id="$2" location="$3" out="$4"
+    pkgbuild --analyze --root "$STAGE_DIR/$name" "$BUILD_DIR/component-$name.plist" > /dev/null
+    # The key is only present for some bundle types; set it or add it.
+    /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$BUILD_DIR/component-$name.plist" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Add :0:BundleIsRelocatable bool false" "$BUILD_DIR/component-$name.plist"
+    pkgbuild \
+        --quiet \
+        --root "$STAGE_DIR/$name" \
+        --component-plist "$BUILD_DIR/component-$name.plist" \
+        --identifier "$id" \
+        --version "$VERSION" \
+        --install-location "$location" \
+        "$out"
+}
 
-pkgbuild \
-    --quiet \
-    --root "$STAGE_DIR/vst3" \
-    --identifier "$PKG_ID_BASE.vst3" \
-    --version "$VERSION" \
-    --install-location "/Library/Audio/Plug-Ins/VST3" \
-    "$BUILD_DIR/SGTMAutomix-VST3.pkg"
+sgtm_build_component au "$PKG_ID_BASE.au" "/Library/Audio/Plug-Ins/Components" "$BUILD_DIR/SGTMAutomix-AU.pkg"
+sgtm_build_component vst3 "$PKG_ID_BASE.vst3" "/Library/Audio/Plug-Ins/VST3" "$BUILD_DIR/SGTMAutomix-VST3.pkg"
+sgtm_build_component aax "$PKG_ID_BASE.aax" "/Library/Application Support/Avid/Audio/Plug-Ins" "$BUILD_DIR/SGTMAutomix-AAX.pkg"
 
 echo "  built component packages"
 
@@ -117,27 +140,33 @@ cat > "$BUILD_DIR/distribution.xml" <<XML
     <welcome file="welcome.txt" mime-type="text/plain"/>
     $BACKGROUND_XML
     <options customize="allow" require-scripts="false" hostArchitectures="arm64,x86_64"/>
-    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="false"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
     <choices-outline>
         <line choice="au"/>
         <line choice="vst3"/>
+        <line choice="aax"/>
     </choices-outline>
     <choice id="au" title="Audio Unit (AU)"
-            description="Installs SGTM Automix.component into ~/Library/Audio/Plug-Ins/Components. For Logic Pro, MainStage and other AU hosts.">
+            description="Installs SGTM Automix.component into /Library/Audio/Plug-Ins/Components. For Logic Pro, MainStage and other AU hosts.">
         <pkg-ref id="$PKG_ID_BASE.au"/>
     </choice>
     <choice id="vst3" title="VST3"
-            description="Installs SGTM Automix.vst3 into ~/Library/Audio/Plug-Ins/VST3. For Cubase, Nuendo, Reaper and other VST3 hosts.">
+            description="Installs SGTM Automix.vst3 into /Library/Audio/Plug-Ins/VST3. For Cubase, Nuendo, Reaper and other VST3 hosts.">
         <pkg-ref id="$PKG_ID_BASE.vst3"/>
+    </choice>
+    <choice id="aax" title="AAX (Pro Tools)"
+            description="Installs SGTM Automix.aaxplugin into /Library/Application Support/Avid/Audio/Plug-Ins. For Pro Tools.">
+        <pkg-ref id="$PKG_ID_BASE.aax"/>
     </choice>
     <pkg-ref id="$PKG_ID_BASE.au" version="$VERSION" onConclusion="none">SGTMAutomix-AU.pkg</pkg-ref>
     <pkg-ref id="$PKG_ID_BASE.vst3" version="$VERSION" onConclusion="none">SGTMAutomix-VST3.pkg</pkg-ref>
+    <pkg-ref id="$PKG_ID_BASE.aax" version="$VERSION" onConclusion="none">SGTMAutomix-AAX.pkg</pkg-ref>
 </installer-gui-script>
 XML
 
 FINAL_PKG="$BUILD_DIR/SGTM-Automix-$VERSION.pkg"
 
-# Only the final combined product is signed; the two component packages above
+# Only the final combined product is signed; the three component packages above
 # are intermediates that get embedded into it, so signing them buys nothing.
 productbuild \
     --quiet \
@@ -155,6 +184,7 @@ xcrun stapler staple "$FINAL_PKG"
 # Tidy up the intermediates so only the shippable .pkg is left behind.
 rm -rf "$STAGE_DIR" "$RESOURCES" \
     "$BUILD_DIR/SGTMAutomix-AU.pkg" "$BUILD_DIR/SGTMAutomix-VST3.pkg" \
+    "$BUILD_DIR/SGTMAutomix-AAX.pkg" "$BUILD_DIR"/component-*.plist \
     "$BUILD_DIR/distribution.xml"
 
 echo

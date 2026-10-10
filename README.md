@@ -14,8 +14,11 @@ Built by SGTM on top of [JUCE](https://juce.com).
 
 ## Status
 
-Early development (0.1.0). Instances on the same computer find each other
-and share gain, live and in offline bounces. Not released.
+Version 1.0.0, the first release. Instances on the same computer find each
+other and share gain, live and in offline bounces. Downloads are on the
+[releases page](https://github.com/okarlsen/sgtm-automix/releases): an
+installer with the AU, VST3 and AAX (Pro Tools), and a zip with the AU and
+VST3 for installing by hand.
 
 ## Requirements
 
@@ -91,8 +94,9 @@ See [BUILDING.md](BUILDING.md).
   smoke test and AU validation (`auval`) pass.
 - Used live in Logic and LiveProfessor on macOS (AU), with linked
   instances, groups and the channel list.
-- Not yet verified: offline bounces in real hosts, AAX in Pro Tools
-  Developer, and the signing and packaging scripts.
+- The AAX passes Avid's AAX Validator (description, parameters, data model,
+  load and unload).
+- Not yet verified: offline bounces in real hosts and the AAX in Pro Tools.
 
 ## License
 
