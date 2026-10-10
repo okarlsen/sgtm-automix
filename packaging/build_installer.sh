@@ -102,7 +102,9 @@ cp -R "$AAX_BUNDLE" "$STAGE_DIR/aax/"
 sgtm_build_component() {
     local name="$1" id="$2" location="$3" out="$4"
     pkgbuild --analyze --root "$STAGE_DIR/$name" "$BUILD_DIR/component-$name.plist" > /dev/null
-    /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$BUILD_DIR/component-$name.plist"
+    # The key is only present for some bundle types; set it or add it.
+    /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$BUILD_DIR/component-$name.plist" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Add :0:BundleIsRelocatable bool false" "$BUILD_DIR/component-$name.plist"
     pkgbuild \
         --quiet \
         --root "$STAGE_DIR/$name" \
