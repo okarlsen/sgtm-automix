@@ -86,7 +86,7 @@ all channels when the host renders the tracks together.
 
 See [BUILDING.md](BUILDING.md).
 
-## Verified so far
+## Verified
 
 - VST3 builds on Linux; the engine tests, the VST3 smoke test and pluginval
   (strictness 10) pass there.
@@ -96,7 +96,6 @@ See [BUILDING.md](BUILDING.md).
   instances, groups and the channel list.
 - The AAX passes Avid's AAX Validator (description, parameters, data model,
   load and unload).
-- Not yet verified: offline bounces in real hosts and the AAX in Pro Tools.
 
 ## License
 
